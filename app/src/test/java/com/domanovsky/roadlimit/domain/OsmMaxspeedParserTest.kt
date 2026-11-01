@@ -5,9 +5,9 @@ import org.junit.Test
 
 class OsmMaxspeedParserTest {
     @Test
-    fun parsesBareNumberWithoutAssumingGlobalUnit() {
+    fun parsesBareNumberAsKilometresPerHour() {
         assertEquals(
-            SpeedLimit.Known(60, null, "60"),
+            SpeedLimit.Known(60, SpeedUnit.KILOMETRES_PER_HOUR, "60"),
             OsmMaxspeedParser.parse("60")
         )
     }
@@ -33,11 +33,12 @@ class OsmMaxspeedParserTest {
     }
 
     @Test
-    fun doesNotGuessMissingOrSymbolicValues() {
+    fun leavesMissingSymbolicAndCountrySpecificValuesUnresolved() {
         assertEquals(SpeedLimit.Missing, OsmMaxspeedParser.parse(null))
         assertEquals(SpeedLimit.NotNumeric("signals"), OsmMaxspeedParser.parse("signals"))
         assertEquals(SpeedLimit.NotNumeric("none"), OsmMaxspeedParser.parse("none"))
         assertEquals(SpeedLimit.NotNumeric("walk"), OsmMaxspeedParser.parse("walk"))
+        assertEquals(SpeedLimit.NotNumeric("BY:urban"), OsmMaxspeedParser.parse("BY:urban"))
     }
 
     @Test
