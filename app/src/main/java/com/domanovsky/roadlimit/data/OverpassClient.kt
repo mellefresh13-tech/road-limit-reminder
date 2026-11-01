@@ -1,0 +1,52 @@
+package com.domanovsky.roadlimit.data
+
+import com.domanovsky.roadlimit.domain.RoadSegment
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+
+class OverpassClient {
+    private val endpoints = listOf(
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter"
+    )
+
+    fun loadNearby(latitude: Double, longitude: Double): List<RoadSegment> {
+        val query = """
+            [out:json][timeout:20];
+            way(around:1100,$latitude,$longitude)
+              ["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"];
+            out tags geom;
+        """.trimIndent()
+        var lastError: Exception? = null
+        for (endpoint in endpoints) {
+            try {
+                val connection = URL(endpoint).openConnection() as HttpURLConnection
+                try {
+                    connection.requestMethod = "POST"
+                    connection.connectTimeout = 12_000
+                    connection.readTimeout = 20_000
+                    connection.doOutput = true
+                    connection.setRequestProperty("User-Agent", "RoadLimitReminder/0.2 (open-data speed limit display)")
+                    connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                    val body = "data=" + URLEncoder.encode(query, "UTF-8")
+                    connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                    val code = connection.responseCode
+                    val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                    val response = stream?.use { input ->
+                        BufferedReader(InputStreamReader(input, Charsets.UTF_8)).readText()
+                    }.orEmpty()
+                    if (code !in 200..299) throw IllegalStateException("Overpass HTTP $code")
+                    return OverpassRoadParser.parse(response)
+                } finally {
+                    connection.disconnect()
+                }
+            } catch (error: Exception) {
+                lastError = error
+            }
+        }
+        throw IllegalStateException("Не удалось получить данные OpenStreetMap", lastError)
+    }
+}
