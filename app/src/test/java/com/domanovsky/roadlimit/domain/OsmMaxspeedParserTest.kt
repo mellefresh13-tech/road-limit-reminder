@@ -5,9 +5,9 @@ import org.junit.Test
 
 class OsmMaxspeedParserTest {
     @Test
-    fun parsesBareNumberAsKilometresPerHour() {
+    fun parsesBareNumberWithoutAssumingGlobalUnit() {
         assertEquals(
-            SpeedLimit.Known(60, SpeedUnit.KILOMETRES_PER_HOUR, "60"),
+            SpeedLimit.Known(60, null, "60"),
             OsmMaxspeedParser.parse("60")
         )
     }
@@ -21,10 +21,14 @@ class OsmMaxspeedParserTest {
     }
 
     @Test
-    fun parsesKphSuffix() {
+    fun parsesExplicitKph() {
         assertEquals(
             SpeedLimit.Known(90, SpeedUnit.KILOMETRES_PER_HOUR, "90 km/h"),
             OsmMaxspeedParser.parse("90 km/h")
+        )
+        assertEquals(
+            SpeedLimit.Known(90, SpeedUnit.KILOMETRES_PER_HOUR, "90 kph"),
+            OsmMaxspeedParser.parse("90 kph")
         )
     }
 
