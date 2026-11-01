@@ -86,7 +86,7 @@ class SpeedLimitService : Service(), LocationListener {
             return
         }
         try {
-            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 5f, this, Looper.getMainLooper())
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, this, Looper.getMainLooper())
             getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, true).apply()
             mainHandler.removeCallbacks(staleFixChecker)
             mainHandler.postDelayed(staleFixChecker, 5_000L)
@@ -140,13 +140,14 @@ class SpeedLimitService : Service(), LocationListener {
         fetching = true
         val latitude = location.latitude
         val longitude = location.longitude
+        val requestedLocation = Location(location)
         publish("Обновляем дорожные данные OSM…", null, location.speed, "GPS ±${location.accuracy.toInt()} м")
         networkExecutor.execute {
             try {
                 val loaded = overpassClient.loadNearby(latitude, longitude)
                 mainHandler.post {
                     roads = loaded
-                    lastFetchLocation = lastFix
+                    lastFetchLocation = requestedLocation
                     lastFetchAt = System.currentTimeMillis()
                     fetching = false
                     val fix = lastFix
