@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import com.domanovsky.roadlimit.MainActivity
 import com.domanovsky.roadlimit.data.OverpassClient
@@ -40,6 +41,16 @@ class SpeedLimitService : Service(), LocationListener {
     private var lastFetchAt = 0L
     private var fetching = false
     private var previousWayId: Long? = null
+
+    private val staleFixChecker = object : Runnable {
+        override fun run() {
+            val fix = lastFix
+            if (fix != null && !isFresh(fix)) {
+                publish("Сигнал GPS потерян — лимит скрыт", null, null, null)
+            }
+            mainHandler.postDelayed(this, 5_000L)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -75,14 +86,10 @@ class SpeedLimitService : Service(), LocationListener {
             return
         }
         try {
-            locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                1_000L,
-                5f,
-                this,
-                Looper.getMainLooper()
-            )
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 5f, this, Looper.getMainLooper())
             getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, true).apply()
+            mainHandler.removeCallbacks(staleFixChecker)
+            mainHandler.postDelayed(staleFixChecker, 5_000L)
             publish("Ожидание сигнала GPS", null, null, null)
         } catch (error: SecurityException) {
             publish("Нет разрешения на геолокацию", null, null, null)
@@ -95,13 +102,11 @@ class SpeedLimitService : Service(), LocationListener {
 
     override fun onLocationChanged(location: Location) {
         lastFix = location
-        val accuracyText = "GPS ±${location.accuracy.toInt()} м"
         if (roads.isEmpty()) {
-            publish("Получаем дорожные данные OSM…", null, location.speed, accuracyText)
+            publish("Получаем дорожные данные OSM…", null, location.speed, "GPS ±${location.accuracy.toInt()} м")
         } else {
             publishMatch(location)
         }
-
         val moved = lastFetchLocation?.distanceTo(location)?.let { it >= 300f } ?: true
         val expired = System.currentTimeMillis() - lastFetchAt >= 120_000L
         val neverFetched = lastFetchAt == 0L
@@ -109,21 +114,20 @@ class SpeedLimitService : Service(), LocationListener {
     }
 
     private fun publishMatch(location: Location) {
+        if (!isFresh(location)) {
+            publish("Сигнал GPS устарел — лимит скрыт", null, null, null)
+            return
+        }
         when (val match = RoadMatcher.match(location.toFix(), roads, previousWayId)) {
             is MatchResult.Matched -> {
                 previousWayId = match.road.id
                 when (val resolution = RoadLimitResolver.resolve(match.road.tags)) {
                     is LimitResolution.Known -> publish(
                         "Дорога определена • ±${match.distanceMetres.toInt()} м",
-                        resolution.limit,
-                        location.speed,
-                        match.road.name ?: match.road.highway
+                        resolution.limit, location.speed, match.road.name ?: match.road.highway
                     )
                     is LimitResolution.Unavailable -> publish(
-                        resolution.reason,
-                        null,
-                        location.speed,
-                        match.road.name ?: match.road.highway
+                        resolution.reason, null, location.speed, match.road.name ?: match.road.highway
                     )
                 }
             }
@@ -146,26 +150,25 @@ class SpeedLimitService : Service(), LocationListener {
                     lastFetchAt = System.currentTimeMillis()
                     fetching = false
                     val fix = lastFix
-                    if (fix != null) publishMatch(fix)
-                    else publish("Данные OSM загружены. Ожидание GPS…", null, null, null)
+                    if (fix != null && isFresh(fix)) publishMatch(fix)
+                    else publish("Данные OSM загружены. Ожидание актуального GPS…", null, null, null)
                 }
             } catch (error: Exception) {
                 mainHandler.post {
                     fetching = false
                     lastFetchAt = System.currentTimeMillis()
                     lastFetchLocation = lastFix
-                    publish("Не удалось загрузить OSM. Проверьте интернет", null, lastFix?.speed, null)
+                    publish("Не удалось загрузить OSM. Проверьте интернет", null, null, null)
                 }
             }
         }
     }
 
+    private fun isFresh(location: Location): Boolean =
+        SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos <= 15_000_000_000L
+
     private fun Location.toFix() = LocationFix(
-        latitude = latitude,
-        longitude = longitude,
-        accuracyMetres = accuracy,
-        bearingDegrees = bearing,
-        speedMetresPerSecond = speed
+        latitude, longitude, accuracy, bearing, speed
     )
 
     private fun publish(status: String, limit: SpeedLimit.Known?, speed: Float?, detail: String?) {
@@ -205,16 +208,13 @@ class SpeedLimitService : Service(), LocationListener {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Отслеживание ограничения скорости",
-                NotificationManager.IMPORTANCE_LOW
-            )
+            val channel = NotificationChannel(CHANNEL_ID, "Отслеживание ограничения скорости", NotificationManager.IMPORTANCE_LOW)
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
     private fun stopTracking() {
+        mainHandler.removeCallbacks(staleFixChecker)
         try {
             locationManager.removeUpdates(this)
         } catch (_: SecurityException) {
@@ -225,11 +225,11 @@ class SpeedLimitService : Service(), LocationListener {
     }
 
     override fun onProviderDisabled(provider: String) {
-        publish("GPS отключён", null, lastFix?.speed, null)
+        publish("GPS отключён", null, null, null)
     }
 
     override fun onProviderEnabled(provider: String) {
-        publish("GPS включён. Ожидание координат…", null, lastFix?.speed, null)
+        publish("GPS включён. Ожидание координат…", null, null, null)
     }
 
     @Deprecated("Deprecated by Android")
@@ -238,6 +238,7 @@ class SpeedLimitService : Service(), LocationListener {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(staleFixChecker)
         try {
             locationManager.removeUpdates(this)
         } catch (_: Exception) {
@@ -248,7 +249,6 @@ class SpeedLimitService : Service(), LocationListener {
     }
 
     companion object {
-        const val ACTION_START = "com.domanovsky.roadlimit.START"
         const val ACTION_STOP = "com.domanovsky.roadlimit.STOP"
         const val ACTION_STATE = "com.domanovsky.roadlimit.STATE"
         const val EXTRA_LIMIT = "limit"

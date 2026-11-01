@@ -18,7 +18,7 @@ object RoadMatcher {
 
         val candidates = roads.mapNotNull { road ->
             bestCandidate(fix, road, previousWayId)
-                ?.takeIf { it.distance <= max(25.0, fix.accuracyMetres * 1.25f) }
+                ?.takeIf { it.distance <= max(25.0, fix.accuracyMetres.toDouble() * 1.25) }
         }.sortedBy { it.score }
         if (candidates.isEmpty()) return MatchResult.NoMatch
 

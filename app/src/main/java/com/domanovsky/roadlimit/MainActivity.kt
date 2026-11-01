@@ -134,7 +134,7 @@ class MainActivity : Activity() {
     }
 
     private fun startTrackingService() {
-        val intent = Intent(this, SpeedLimitService::class.java).setAction(SpeedLimitService.ACTION_START)
+        val intent = Intent(this, SpeedLimitService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
         serviceStarted = true
         updateButton()
@@ -153,11 +153,12 @@ class MainActivity : Activity() {
         else status.text = "Для определения дороги разрешите точную геолокацию"
     }
 
+    @Suppress("DEPRECATION")
     override fun onStart() {
         super.onStart()
         val filter = IntentFilter(SpeedLimitService.ACTION_STATE)
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(stateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        else @Suppress("DEPRECATION") registerReceiver(stateReceiver, filter)
+        else registerReceiver(stateReceiver, filter)
     }
 
     override fun onStop() {
