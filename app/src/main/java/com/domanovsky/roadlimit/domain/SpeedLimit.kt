@@ -8,7 +8,8 @@ enum class SpeedUnit {
 sealed interface SpeedLimit {
     data class Known(
         val value: Int,
-        val unit: SpeedUnit,
+        /** Null means the OSM tag omitted a unit; resolve using country context. */
+        val unit: SpeedUnit?,
         val rawTag: String
     ) : SpeedLimit
 
