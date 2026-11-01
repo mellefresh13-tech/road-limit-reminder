@@ -13,12 +13,12 @@ object RoadMatcher {
 
     fun match(fix: LocationFix, roads: List<RoadSegment>, previousWayId: Long? = null): MatchResult {
         if (!fix.latitude.isFinite() || !fix.longitude.isFinite() ||
-            fix.accuracyMetres <= 0f || fix.accuracyMetres > 60f
+            fix.accuracyMetres <= 0f || fix.accuracyMetres > 40f
         ) return MatchResult.NoMatch
 
         val candidates = roads.mapNotNull { road ->
             bestCandidate(fix, road, previousWayId)
-                ?.takeIf { it.distance <= max(25.0, fix.accuracyMetres.toDouble() * 1.25) }
+                ?.takeIf { it.distance <= max(15.0, min(30.0, fix.accuracyMetres.toDouble() * 1.5)) }
         }.sortedBy { it.score }
         if (candidates.isEmpty()) return MatchResult.NoMatch
 
@@ -51,7 +51,7 @@ object RoadMatcher {
             bestHeadingPenalty = headingPenalty
         }
         if (!bestDistance.isFinite()) return null
-        val continuityBonus = if (road.id == previousWayId) 5.0 else 0.0
+        val continuityBonus = if (road.id == previousWayId) 3.0 else 0.0
         return Candidate(road, bestDistance, bestDistance + bestHeadingPenalty - continuityBonus)
     }
 

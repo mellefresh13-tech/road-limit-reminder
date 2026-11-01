@@ -66,7 +66,7 @@ class SpeedLimitService : Service(), LocationListener {
         }
         startAsForeground()
         startTracking()
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun startAsForeground() {
@@ -172,7 +172,13 @@ class SpeedLimitService : Service(), LocationListener {
     )
 
     private fun publish(status: String, limit: SpeedLimit.Known?, speed: Float?, detail: String?) {
-        val speedText = speed?.takeIf { it.isFinite() }?.let { "${(it * 3.6f).toInt()} км/ч" } ?: "—"
+        val speedText = speed?.takeIf { it.isFinite() }?.let {
+            if (limit?.unit == com.domanovsky.roadlimit.domain.SpeedUnit.MILES_PER_HOUR) {
+                "${(it * 2.23694f).toInt()} mph"
+            } else {
+                "${(it * 3.6f).toInt()} км/ч"
+            }
+        } ?: "—"
         val stateIntent = Intent(ACTION_STATE).setPackage(packageName).apply {
             putExtra(EXTRA_LIMIT, limit?.value?.toString() ?: "—")
             putExtra(EXTRA_UNIT, limit?.unit?.label.orEmpty())
