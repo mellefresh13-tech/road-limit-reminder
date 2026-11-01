@@ -1,0 +1,265 @@
+package com.domanovsky.roadlimit.location
+
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import androidx.core.app.NotificationCompat
+import com.domanovsky.roadlimit.MainActivity
+import com.domanovsky.roadlimit.data.OverpassClient
+import com.domanovsky.roadlimit.domain.LimitResolution
+import com.domanovsky.roadlimit.domain.LocationFix
+import com.domanovsky.roadlimit.domain.MatchResult
+import com.domanovsky.roadlimit.domain.RoadLimitResolver
+import com.domanovsky.roadlimit.domain.RoadMatcher
+import com.domanovsky.roadlimit.domain.RoadSegment
+import com.domanovsky.roadlimit.domain.SpeedLimit
+import java.util.concurrent.Executors
+
+class SpeedLimitService : Service(), LocationListener {
+    private lateinit var locationManager: LocationManager
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val networkExecutor = Executors.newSingleThreadExecutor()
+    private val overpassClient = OverpassClient()
+    private var roads: List<RoadSegment> = emptyList()
+    private var lastFix: Location? = null
+    private var lastFetchLocation: Location? = null
+    private var lastFetchAt = 0L
+    private var fetching = false
+    private var previousWayId: Long? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        createNotificationChannel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            stopTracking()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        startAsForeground()
+        startTracking()
+        return START_STICKY
+    }
+
+    private fun startAsForeground() {
+        val notification = buildNotification("Ожидание GPS")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun startTracking() {
+        val fineGranted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!fineGranted) {
+            publish("Требуется точная геолокация", null, null, null)
+            stopSelf()
+            return
+        }
+        try {
+            locationManager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                1_000L,
+                5f,
+                this,
+                Looper.getMainLooper()
+            )
+            getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, true).apply()
+            publish("Ожидание сигнала GPS", null, null, null)
+        } catch (error: SecurityException) {
+            publish("Нет разрешения на геолокацию", null, null, null)
+            stopSelf()
+        } catch (error: IllegalArgumentException) {
+            publish("GPS недоступен на устройстве", null, null, null)
+            stopSelf()
+        }
+    }
+
+    override fun onLocationChanged(location: Location) {
+        lastFix = location
+        val accuracyText = "GPS ±${location.accuracy.toInt()} м"
+        if (roads.isEmpty()) {
+            publish("Получаем дорожные данные OSM…", null, location.speed, accuracyText)
+        } else {
+            publishMatch(location)
+        }
+
+        val moved = lastFetchLocation?.distanceTo(location)?.let { it >= 300f } ?: true
+        val expired = System.currentTimeMillis() - lastFetchAt >= 120_000L
+        val neverFetched = lastFetchAt == 0L
+        if (!fetching && (neverFetched || moved || expired)) fetchRoads(location)
+    }
+
+    private fun publishMatch(location: Location) {
+        when (val match = RoadMatcher.match(location.toFix(), roads, previousWayId)) {
+            is MatchResult.Matched -> {
+                previousWayId = match.road.id
+                when (val resolution = RoadLimitResolver.resolve(match.road.tags)) {
+                    is LimitResolution.Known -> publish(
+                        "Дорога определена • ±${match.distanceMetres.toInt()} м",
+                        resolution.limit,
+                        location.speed,
+                        match.road.name ?: match.road.highway
+                    )
+                    is LimitResolution.Unavailable -> publish(
+                        resolution.reason,
+                        null,
+                        location.speed,
+                        match.road.name ?: match.road.highway
+                    )
+                }
+            }
+            MatchResult.Ambiguous -> publish("Рядом несколько возможных дорог — уточняем положение", null, location.speed, "GPS ±${location.accuracy.toInt()} м")
+            MatchResult.NoMatch -> publish("Не удалось уверенно определить дорогу", null, location.speed, "GPS ±${location.accuracy.toInt()} м")
+        }
+    }
+
+    private fun fetchRoads(location: Location) {
+        fetching = true
+        val latitude = location.latitude
+        val longitude = location.longitude
+        publish("Обновляем дорожные данные OSM…", null, location.speed, "GPS ±${location.accuracy.toInt()} м")
+        networkExecutor.execute {
+            try {
+                val loaded = overpassClient.loadNearby(latitude, longitude)
+                mainHandler.post {
+                    roads = loaded
+                    lastFetchLocation = lastFix
+                    lastFetchAt = System.currentTimeMillis()
+                    fetching = false
+                    val fix = lastFix
+                    if (fix != null) publishMatch(fix)
+                    else publish("Данные OSM загружены. Ожидание GPS…", null, null, null)
+                }
+            } catch (error: Exception) {
+                mainHandler.post {
+                    fetching = false
+                    lastFetchAt = System.currentTimeMillis()
+                    lastFetchLocation = lastFix
+                    publish("Не удалось загрузить OSM. Проверьте интернет", null, lastFix?.speed, null)
+                }
+            }
+        }
+    }
+
+    private fun Location.toFix() = LocationFix(
+        latitude = latitude,
+        longitude = longitude,
+        accuracyMetres = accuracy,
+        bearingDegrees = bearing,
+        speedMetresPerSecond = speed
+    )
+
+    private fun publish(status: String, limit: SpeedLimit.Known?, speed: Float?, detail: String?) {
+        val speedText = speed?.takeIf { it.isFinite() }?.let { "${(it * 3.6f).toInt()} км/ч" } ?: "—"
+        val stateIntent = Intent(ACTION_STATE).setPackage(packageName).apply {
+            putExtra(EXTRA_LIMIT, limit?.value?.toString() ?: "—")
+            putExtra(EXTRA_UNIT, limit?.unit?.label.orEmpty())
+            putExtra(EXTRA_STATUS, status)
+            putExtra(EXTRA_SPEED, speedText)
+            putExtra(EXTRA_DETAIL, detail.orEmpty())
+            putExtra(EXTRA_KNOWN, limit != null)
+        }
+        sendBroadcast(stateIntent)
+        val notificationText = if (limit != null) "Лимит ${limit.value} ${limit.unit.label}" else status
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(notificationText))
+    }
+
+    private fun buildNotification(text: String): Notification {
+        val openIntent = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val stopIntent = PendingIntent.getService(
+            this, 1, Intent(this, SpeedLimitService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setContentTitle("Road Limit Reminder")
+            .setContentText(text)
+            .setContentIntent(openIntent)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .addAction(android.R.drawable.ic_media_pause, "Остановить", stopIntent)
+            .build()
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Отслеживание ограничения скорости",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+    }
+
+    private fun stopTracking() {
+        try {
+            locationManager.removeUpdates(this)
+        } catch (_: SecurityException) {
+        }
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, false).apply()
+        networkExecutor.shutdownNow()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+    }
+
+    override fun onProviderDisabled(provider: String) {
+        publish("GPS отключён", null, lastFix?.speed, null)
+    }
+
+    override fun onProviderEnabled(provider: String) {
+        publish("GPS включён. Ожидание координат…", null, lastFix?.speed, null)
+    }
+
+    @Deprecated("Deprecated by Android")
+    override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) = Unit
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        try {
+            locationManager.removeUpdates(this)
+        } catch (_: Exception) {
+        }
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, false).apply()
+        networkExecutor.shutdownNow()
+        super.onDestroy()
+    }
+
+    companion object {
+        const val ACTION_START = "com.domanovsky.roadlimit.START"
+        const val ACTION_STOP = "com.domanovsky.roadlimit.STOP"
+        const val ACTION_STATE = "com.domanovsky.roadlimit.STATE"
+        const val EXTRA_LIMIT = "limit"
+        const val EXTRA_UNIT = "unit"
+        const val EXTRA_STATUS = "status"
+        const val EXTRA_SPEED = "speed"
+        const val EXTRA_DETAIL = "detail"
+        const val EXTRA_KNOWN = "known"
+        const val PREFERENCES = "tracking_state"
+        const val KEY_RUNNING = "running"
+        private const val CHANNEL_ID = "speed_limit_tracking"
+        private const val NOTIFICATION_ID = 71
+    }
+}
