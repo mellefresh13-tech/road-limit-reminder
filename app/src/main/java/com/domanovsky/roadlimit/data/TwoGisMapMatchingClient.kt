@@ -1,7 +1,5 @@
 package com.domanovsky.roadlimit.data
 
-import android.content.Context
-import android.location.Location
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -9,7 +7,6 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import kotlin.math.*
 
 data class TwoGisGpsPoint(
     val latitude: Double,
@@ -36,7 +33,8 @@ data class TwoGisEdge(
 data class TwoGisMatchResult(
     val edges: List<TwoGisEdge>,
     val currentEdgeId: Long?,
-    val matchedPoint: com.domanovsky.roadlimit.domain.GeoPoint?
+    val matchedPoint: com.domanovsky.roadlimit.domain.GeoPoint?,
+    val matchedPointIndex: Int?
 )
 
 class TwoGisMapMatchingClient(private val apiKey: String) {
@@ -137,17 +135,22 @@ object TwoGisResponseParser {
         val query = root.optJSONArray("query") ?: JSONArray()
         var currentEdgeId: Long? = null
         var matchedPoint: com.domanovsky.roadlimit.domain.GeoPoint? = null
+        var matchedPointIndex: Int? = null
         for (index in 0 until query.length()) {
             val item = query.optJSONObject(index) ?: continue
             val edgeId = item.optLong("edge_id", -1L)
             val lat = item.optDouble("lat_matched", Double.NaN)
             val lon = item.optDouble("lon_matched", Double.NaN)
-            if (edgeId > 0L && lat.isFinite() && lon.isFinite()) {
+            val pointIndex = item.optInt("query_point_idx", index)
+            if (edgeId > 0L && lat.isFinite() && lon.isFinite() &&
+                (matchedPointIndex == null || pointIndex > matchedPointIndex)
+            ) {
                 currentEdgeId = edgeId
                 matchedPoint = com.domanovsky.roadlimit.domain.GeoPoint(lat, lon)
+                matchedPointIndex = pointIndex
             }
         }
-        return TwoGisMatchResult(edges, currentEdgeId, matchedPoint)
+        return TwoGisMatchResult(edges, currentEdgeId, matchedPoint, matchedPointIndex)
     }
 
     private fun parseLineString(wkt: String): List<com.domanovsky.roadlimit.domain.GeoPoint> {
