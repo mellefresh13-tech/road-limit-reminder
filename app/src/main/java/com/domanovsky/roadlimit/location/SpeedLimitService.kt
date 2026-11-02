@@ -50,7 +50,6 @@ class SpeedLimitService : Service(), LocationListener {
 
     // 2GIS response geometry is kept only in memory during the active tracking session.
     private var matchedEdges: List<TwoGisEdge> = emptyList()
-    private var currentEdgeId: Long? = null
     private var lastFix: Location? = null
     private var latestLimit: SpeedLimit? = null
     private var latestLimitStatus: String? = null
@@ -200,7 +199,6 @@ class SpeedLimitService : Service(), LocationListener {
                     consecutiveFailures = 0
                     nextRetryAt = System.currentTimeMillis() + SUCCESSFUL_REQUEST_COOLDOWN_MILLIS
                     matchedEdges = result.edges
-                    currentEdgeId = result.currentEdgeId
 
                     val fix = lastFix
                     val matched = fix?.takeIf(::isFresh)?.let { matchCurrentFix(it, result) }
@@ -246,20 +244,12 @@ class SpeedLimitService : Service(), LocationListener {
         val edges = result?.edges ?: matchedEdges
         if (edges.isEmpty()) return null
         val fix = location.toFix()
-        val preferredEdge = result?.currentEdgeId ?: currentEdgeId
-        if (preferredEdge != null) {
-            val preferred = edges.firstOrNull { it.id == preferredEdge }
-            if (preferred != null) {
-                TwoGisEdgeMatcher.match(fix, listOf(preferred))?.let { return it }
-            }
-        }
         return TwoGisEdgeMatcher.match(fix, edges)
     }
 
     private fun updateFromMatchedEdges(location: Location): Boolean {
         if (!isFresh(location) || matchedEdges.isEmpty()) return false
         val match = matchCurrentFix(location) ?: return false
-        currentEdgeId = match.edge.id
         publishMatched(match, location)
         return true
     }
@@ -286,7 +276,6 @@ class SpeedLimitService : Service(), LocationListener {
 
     private fun clearMatchedRoadData() {
         matchedEdges = emptyList()
-        currentEdgeId = null
         clearDisplayedLimit()
         gpsSamples.clear()
     }
