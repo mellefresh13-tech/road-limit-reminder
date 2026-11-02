@@ -16,20 +16,21 @@ class RoadLimitResolverTest {
 
     @Test
     fun resolvesBelarusUrbanAndRuralDefaultsFromOsmContext() {
-        val urban = RoadLimitResolver.resolve(
+        val urban = (RoadLimitResolver.resolve(
             mapOf("highway" to "primary"),
             countryCode = "BY",
             insideSettlement = true
-        )
-        val rural = RoadLimitResolver.resolve(
+        ) as LimitResolution.Known).limit
+        val rural = (RoadLimitResolver.resolve(
             mapOf("highway" to "primary"),
             countryCode = "BY",
             insideSettlement = false
-        )
-        assertEquals(60, (urban as LimitResolution.Known).limit.value)
-        assertEquals("BY:urban — ПДД РБ п.88", urban.limit.rawTag)
-        assertEquals(90, (rural as LimitResolution.Known).limit.value)
-        assertEquals("BY:rural — ПДД РБ п.89.1", rural.limit.rawTag)
+        ) as LimitResolution.Known).limit
+
+        assertEquals(60, urban.value)
+        assertEquals("BY:urban — ПДД РБ п.88", urban.rawTag)
+        assertEquals(90, rural.value)
+        assertEquals("BY:rural — ПДД РБ п.89.1", rural.rawTag)
     }
 
     @Test
@@ -38,29 +39,25 @@ class RoadLimitResolverTest {
             mapOf("highway" to "motorway"),
             countryCode = "BY",
             insideSettlement = false
-        )
+        ) as LimitResolution.Known
         val livingStreet = RoadLimitResolver.resolve(
             mapOf("highway" to "living_street"),
             countryCode = "BY",
             insideSettlement = null
-        )
-        assertEquals(120, (motorway as LimitResolution.Known).limit.value)
-        assertEquals(20, (livingStreet as LimitResolution.Known).limit.value)
+        ) as LimitResolution.Known
+        assertEquals(120, motorway.limit.value)
+        assertEquals(20, livingStreet.limit.value)
     }
 
     @Test
     fun resolvesBelarusSymbolicMaxspeedAndSourceTags() {
-        assertEquals(
-            60,
-            (RoadLimitResolver.resolve(mapOf("maxspeed" to "BY:urban")) as LimitResolution.Known).limit.value
-        )
-        assertEquals(
-            90,
-            (RoadLimitResolver.resolve(
-                mapOf("highway" to "secondary", "source:maxspeed" to "BY:rural"),
-                countryCode = "BY"
-            ) as LimitResolution.Known).limit.value
-        )
+        val urban = RoadLimitResolver.resolve(mapOf("maxspeed" to "BY:urban")) as LimitResolution.Known
+        val rural = RoadLimitResolver.resolve(
+            mapOf("highway" to "secondary", "source:maxspeed" to "BY:rural"),
+            countryCode = "BY"
+        ) as LimitResolution.Known
+        assertEquals(60, urban.limit.value)
+        assertEquals(90, rural.limit.value)
     }
 
     @Test
