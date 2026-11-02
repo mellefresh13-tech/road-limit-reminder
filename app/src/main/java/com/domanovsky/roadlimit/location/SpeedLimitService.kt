@@ -204,7 +204,12 @@ class SpeedLimitService : Service(), LocationListener {
                     gpsSamples.addLast(latestSubmitted)
                     newerSamples.takeLast(MAX_QUERY_POINTS - 1).forEach(gpsSamples::addLast)
 
-                    applyLiveResult(result, latestSubmitted)
+                    val matchedIndex = result.matchedPointIndex
+                    val matchedSample = matchedIndex
+                        ?.takeIf { it in samples.indices }
+                        ?.let(samples::get)
+                        ?: latestSubmitted
+                    applyLiveResult(result, matchedSample)
                     if (gpsSamples.size >= REFRESH_QUERY_POINTS) requestMapMatching()
                 }
             } catch (error: Exception) {
