@@ -55,6 +55,7 @@ class SpeedLimitService : Service(), LocationListener {
     private var latestLimitStatus: String? = null
     private var latestLimitDetail: String? = null
     private var requestInFlight = false
+    private var trackingActive = false
     private var nextRetryAt = 0L
     private var consecutiveFailures = 0
 
@@ -96,12 +97,14 @@ class SpeedLimitService : Service(), LocationListener {
     }
 
     private fun startTracking() {
+        if (trackingActive) return
         val fineGranted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (!fineGranted) {
             publish("Требуется точная геолокация", null, null, null)
             stopSelf()
             return
         }
+        trackingActive = true
         try {
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
@@ -196,6 +199,7 @@ class SpeedLimitService : Service(), LocationListener {
                 val result = TwoGisMapMatchingClient(BuildConfig.DGIS_API_KEY).match(queryPoints)
                 mainHandler.post {
                     requestInFlight = false
+                    if (!trackingActive) return@post
                     consecutiveFailures = 0
                     nextRetryAt = System.currentTimeMillis() + SUCCESSFUL_REQUEST_COOLDOWN_MILLIS
                     matchedEdges = result.edges
@@ -217,6 +221,7 @@ class SpeedLimitService : Service(), LocationListener {
             } catch (error: Exception) {
                 mainHandler.post {
                     requestInFlight = false
+                    if (!trackingActive) return@post
                     consecutiveFailures++
                     val backoff = min(
                         MAX_RETRY_DELAY_MILLIS,
@@ -402,6 +407,7 @@ class SpeedLimitService : Service(), LocationListener {
     }
 
     private fun stopTracking() {
+        trackingActive = false
         mainHandler.removeCallbacks(staleFixChecker)
         try {
             locationManager.removeUpdates(this)
@@ -429,6 +435,7 @@ class SpeedLimitService : Service(), LocationListener {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        trackingActive = false
         mainHandler.removeCallbacks(staleFixChecker)
         try {
             locationManager.removeUpdates(this)
