@@ -105,7 +105,7 @@ class MainActivity : Activity() {
             setPadding(0, 24, 0, 0)
             setOnClickListener {
                 runCatching {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://dev.2gis.ru/")))
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/hvdwolf/SpeedAlert_Databases")))
                 }
             }
         }
