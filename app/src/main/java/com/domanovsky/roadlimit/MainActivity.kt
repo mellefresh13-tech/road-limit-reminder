@@ -98,7 +98,7 @@ class MainActivity : Activity() {
             setOnClickListener { onTrackingButtonClicked() }
         }
         val attribution = TextView(this).apply {
-            text = "© OpenStreetMap contributors • ODbL 1.0\\nБазы скоростных ограничений: HvdWolf / SpeedAlert_Databases • CC BY 4.0."
+            text = "© OpenStreetMap contributors • ODbL 1.0\nБазы скоростных ограничений: HvdWolf / SpeedAlert_Databases • CC BY 4.0."
             textSize = 11f
             setTextColor(0xFF78909C.toInt())
             gravity = Gravity.CENTER
