@@ -36,6 +36,8 @@ jobs:
         run: gradle testDebugUnitTest
 
       - name: Build test APK
+        env:
+          DGIS_API_KEY: ${{ secrets.DGIS_API_KEY }}
         run: gradle assembleDebug
 
       - name: Upload test APK
