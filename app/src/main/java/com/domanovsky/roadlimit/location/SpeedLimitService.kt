@@ -50,6 +50,7 @@ class SpeedLimitService : Service(), LocationListener {
     private var lastFetchAt = 0L
     private var fetching = false
     private var previousWayId: Long? = null
+    private var cachedFallbackActive = false
 
     private val staleFixChecker = object : Runnable {
         override fun run() {
@@ -135,7 +136,11 @@ class SpeedLimitService : Service(), LocationListener {
                         val fromBelarusRules = resolution.limit.rawTag.startsWith("BY:") ||
                             resolution.limit.rawTag.contains("ПДД РБ")
                         publish(
-                            if (fromBelarusRules) "Базовое ограничение по ПДД РБ" else "Ограничение по данным OpenStreetMap",
+                            when {
+                                cachedFallbackActive -> "Сохранённые данные OSM — сеть недоступна"
+                                fromBelarusRules -> "Базовое ограничение по ПДД РБ"
+                                else -> "Ограничение по данным OpenStreetMap"
+                            },
                             resolution.limit,
                             location.speed,
                             match.road.name ?: match.road.highway
@@ -164,6 +169,7 @@ class SpeedLimitService : Service(), LocationListener {
                     roads = loaded.roads
                     countryCode = loaded.countryCode
                     insideSettlement = loaded.insideSettlement
+                    cachedFallbackActive = false
                     lastFetchLocation = requestedLocation
                     lastFetchAt = System.currentTimeMillis()
                     fetching = false

@@ -3,13 +3,22 @@ package com.domanovsky.roadlimit.domain
 import kotlin.math.*
 
 sealed interface MatchResult {
-    data class Matched(val road: RoadSegment, val distanceMetres: Double) : MatchResult
+    data class Matched(
+        val road: RoadSegment,
+        val distanceMetres: Double,
+        val direction: RoadDirection
+    ) : MatchResult
     data object NoMatch : MatchResult
     data object Ambiguous : MatchResult
 }
 
 object RoadMatcher {
-    private data class Candidate(val road: RoadSegment, val distance: Double, val score: Double)
+    private data class Candidate(
+        val road: RoadSegment,
+        val distance: Double,
+        val score: Double,
+        val direction: RoadDirection
+    )
 
     fun match(fix: LocationFix, roads: List<RoadSegment>, previousWayId: Long? = null): MatchResult {
         if (!fix.latitude.isFinite() || !fix.longitude.isFinite() ||
@@ -25,39 +34,47 @@ object RoadMatcher {
         val best = candidates.first()
         val second = candidates.drop(1).firstOrNull { it.road.id != best.road.id }
         if (second != null && abs(second.score - best.score) < 4.0 &&
-            limitFingerprint(second.road) != limitFingerprint(best.road)
+            (limitFingerprint(second.road) != limitFingerprint(best.road) ||
+                second.direction != best.direction)
         ) return MatchResult.Ambiguous
-        return MatchResult.Matched(best.road, best.distance)
+        return MatchResult.Matched(best.road, best.distance, best.direction)
     }
 
     private fun bestCandidate(fix: LocationFix, road: RoadSegment, previousWayId: Long?): Candidate? {
         var bestDistance = Double.POSITIVE_INFINITY
         var bestHeadingPenalty = 0.0
+        var bestDirection = RoadDirection.UNKNOWN
         for (index in 0 until road.geometry.lastIndex) {
             val start = road.geometry[index]
             val end = road.geometry[index + 1]
             val distance = distanceToSegment(fix.latitude, fix.longitude, start, end)
             if (distance >= bestDistance) continue
             val segmentBearing = bearing(start, end)
-            val headingPenalty = if (fix.speedMetresPerSecond >= 3f) {
-                val difference = angleDifference(fix.bearingDegrees.toDouble(), segmentBearing)
-                val oneWay = road.tags["oneway"]
-                if ((oneWay == "yes" || oneWay == "1" || oneWay == "true") && difference > 100.0) continue
-                if (oneWay == "-1" && angleDifference(fix.bearingDegrees.toDouble(), (segmentBearing + 180.0) % 360.0) > 100.0) continue
+            val hasHeading = fix.speedMetresPerSecond >= 3f
+            val difference = if (hasHeading) angleDifference(fix.bearingDegrees.toDouble(), segmentBearing) else 180.0
+            val oneWay = road.tags["oneway"]
+            if (hasHeading && (oneWay == "yes" || oneWay == "1" || oneWay == "true") && difference > 100.0) continue
+            if (hasHeading && oneWay == "-1" && angleDifference(fix.bearingDegrees.toDouble(), (segmentBearing + 180.0) % 360.0) > 100.0) continue
+            bestDistance = distance
+            bestDirection = when {
+                !hasHeading -> RoadDirection.UNKNOWN
+                difference <= 90.0 -> RoadDirection.FORWARD
+                else -> RoadDirection.BACKWARD
+            }
+            bestHeadingPenalty = if (hasHeading) {
                 if (oneWay == "yes" || oneWay == "1" || oneWay == "true") difference * 0.16
                 else min(difference, 180.0 - difference) * 0.12
             } else 0.0
-            bestDistance = distance
-            bestHeadingPenalty = headingPenalty
         }
         if (!bestDistance.isFinite()) return null
         val continuityBonus = if (road.id == previousWayId) 3.0 else 0.0
-        return Candidate(road, bestDistance, bestDistance + bestHeadingPenalty - continuityBonus)
+        return Candidate(road, bestDistance, bestDistance + bestHeadingPenalty - continuityBonus, bestDirection)
     }
 
     private fun limitFingerprint(road: RoadSegment): String =
-        road.tags["maxspeed:motorcar"] ?: road.tags["maxspeed:motor_vehicle"]
-        ?: road.tags["maxspeed"] ?: road.tags["maxspeed:conditional"] ?: "unknown"
+        listOf("maxspeed:motorcar", "maxspeed:motor_vehicle", "maxspeed",
+            "maxspeed:forward", "maxspeed:backward", "maxspeed:conditional")
+            .mapNotNull { key -> road.tags[key]?.let { "$key=$it" } }.joinToString("|").ifBlank { "unknown" }
 
     private fun distanceToSegment(lat: Double, lon: Double, start: GeoPoint, end: GeoPoint): Double {
         val latitudeScale = 111_320.0

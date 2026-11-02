@@ -12,8 +12,10 @@ object OverpassRoadParser {
     fun parse(json: String): List<RoadSegment> = parseData(json).roads
 
     fun parseData(json: String): NearbyRoadData {
-        val elements = JSONObject(json).optJSONArray("elements") ?: return NearbyRoadData(emptyList(), null, null)
+        val elements = JSONObject(json).optJSONArray("elements")
+            ?: return NearbyRoadData(emptyList(), null, null)
         val roads = ArrayList<RoadSegment>(elements.length())
+        val signs = ArrayList<TrafficSign>()
         var countryCode: String? = null
         var insideSettlement = false
         var countryAreaFound = false
@@ -35,6 +37,17 @@ object OverpassRoadParser {
                     countryCode = tags["ISO3166-1"] ?: tags["ISO3166-1:alpha2"] ?: countryCode
                 }
                 tags["place"]?.let { if (it in settlementPlaces) insideSettlement = true }
+                continue
+            }
+
+            if (type == "node") {
+                val lat = element.optDouble("lat", Double.NaN)
+                val lon = element.optDouble("lon", Double.NaN)
+                if (lat.isFinite() && lon.isFinite() &&
+                    (tags.containsKey("traffic_sign") || tags.containsKey("maxspeed"))
+                ) {
+                    signs += TrafficSign(element.optLong("id", -1L), GeoPoint(lat, lon), tags)
+                }
                 continue
             }
             if (type != "way") continue
@@ -62,6 +75,6 @@ object OverpassRoadParser {
             countryAreaFound -> false
             else -> null
         }
-        return NearbyRoadData(roads, countryCode, settlementState)
+        return NearbyRoadData(roads, countryCode, settlementState, signs)
     }
 }

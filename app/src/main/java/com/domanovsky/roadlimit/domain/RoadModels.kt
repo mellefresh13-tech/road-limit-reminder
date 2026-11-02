@@ -1,6 +1,7 @@
 package com.domanovsky.roadlimit.domain
 
 data class GeoPoint(val latitude: Double, val longitude: Double)
+
 data class RoadSegment(
     val id: Long,
     val name: String?,
@@ -8,6 +9,7 @@ data class RoadSegment(
     val tags: Map<String, String>,
     val geometry: List<GeoPoint>
 )
+
 data class LocationFix(
     val latitude: Double,
     val longitude: Double,
@@ -15,6 +17,8 @@ data class LocationFix(
     val bearingDegrees: Float,
     val speedMetresPerSecond: Float
 )
+
+enum class RoadDirection { FORWARD, BACKWARD, UNKNOWN }
 
 sealed interface LimitResolution {
     data class Known(val limit: SpeedLimit.Known) : LimitResolution
@@ -25,7 +29,8 @@ object RoadLimitResolver {
     fun resolve(
         tags: Map<String, String>,
         countryCode: String? = null,
-        insideSettlement: Boolean? = null
+        insideSettlement: Boolean? = null,
+        direction: RoadDirection = RoadDirection.UNKNOWN
     ): LimitResolution {
         if (tags.containsKey("maxspeed:conditional")) {
             return LimitResolution.Unavailable("Условное ограничение не поддерживается")
@@ -36,11 +41,19 @@ object RoadLimitResolver {
         if (tags.keys.any { it.startsWith("maxspeed:lanes") }) {
             return LimitResolution.Unavailable("Ограничения различаются по полосам")
         }
-        if (tags.containsKey("maxspeed:forward") || tags.containsKey("maxspeed:backward")) {
-            return LimitResolution.Unavailable("Ограничение зависит от направления")
-        }
 
-        val raw = tags["maxspeed:motorcar"] ?: tags["maxspeed:motor_vehicle"] ?: tags["maxspeed"]
+        val hasDirectionalLimit = tags.containsKey("maxspeed:forward") || tags.containsKey("maxspeed:backward")
+        if (hasDirectionalLimit && direction == RoadDirection.UNKNOWN) {
+            return LimitResolution.Unavailable("Не удалось уверенно определить направление движения")
+        }
+        val directionalRaw = when (direction) {
+            RoadDirection.FORWARD -> tags["maxspeed:forward"]
+            RoadDirection.BACKWARD -> tags["maxspeed:backward"]
+            RoadDirection.UNKNOWN -> null
+        }
+        val raw = directionalRaw ?: tags["maxspeed:motorcar"]
+            ?: tags["maxspeed:motor_vehicle"] ?: tags["maxspeed"]
+
         if (raw != null) {
             belarusSymbolicLimit(raw)?.let { return LimitResolution.Known(it) }
             return when (val parsed = OsmMaxspeedParser.parse(raw)) {
@@ -49,6 +62,18 @@ object RoadLimitResolver {
                 is SpeedLimit.NotNumeric -> LimitResolution.Unavailable("Нечисловое значение maxspeed: $raw")
                 SpeedLimit.Missing -> LimitResolution.Unavailable("Ограничение скорости не указано")
             }
+        }
+
+        val signDirectionTag = when (direction) {
+            RoadDirection.FORWARD -> tags["traffic_sign:forward"]
+            RoadDirection.BACKWARD -> tags["traffic_sign:backward"]
+            RoadDirection.UNKNOWN -> null
+        }
+        val signText = signDirectionTag ?: tags["traffic_sign"]
+        if (signText != null && signText.contains("maxspeed", ignoreCase = true) &&
+            tags["maxspeed"] == null
+        ) {
+            return LimitResolution.Unavailable("Знак ограничения отмечен в OSM, но значение maxspeed не указано")
         }
 
         val belarusZone = tags["zone:traffic"] ?: tags["source:maxspeed"] ?: tags["maxspeed:type"]
@@ -60,7 +85,6 @@ object RoadLimitResolver {
             val highway = tags["highway"]
             val isMotorway = highway == "motorway" || highway == "motorway_link" ||
                 tags["motorroad"] == "yes"
-
             val default = when {
                 highway == "living_street" -> 20
                 insideSettlement == true -> 60
@@ -80,7 +104,6 @@ object RoadLimitResolver {
                 )
             }
         }
-
         return LimitResolution.Unavailable("Для этой дороги нет явного ограничения или подтверждённого контекста ПДД")
     }
 

@@ -1,14 +1,17 @@
 package com.domanovsky.roadlimit.data
 
+import com.domanovsky.roadlimit.domain.GeoPoint
 import com.domanovsky.roadlimit.domain.RoadSegment
 
-/**
- * OSM roads plus the administrative/place areas containing the current GPS point.
- * A null country means Overpass could not identify the containing country area.
- * A null settlement state means no reliable settlement area was returned.
- */
+data class TrafficSign(
+    val id: Long,
+    val point: GeoPoint,
+    val tags: Map<String, String>
+)
+
 data class NearbyRoadData(
     val roads: List<RoadSegment>,
     val countryCode: String?,
-    val insideSettlement: Boolean?
+    val insideSettlement: Boolean?,
+    val signs: List<TrafficSign> = emptyList()
 )
