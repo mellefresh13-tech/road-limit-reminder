@@ -52,7 +52,7 @@ object TrafficSignResolver {
                 RoadDirection.UNKNOWN -> false
             }
             if (!passed) return@mapNotNull null
-            Triple(signProjection.alongMetres, SpeedLimit.Known(
+            Pair(signProjection.alongMetres, SpeedLimit.Known(
                 parsed.value, parsed.unit, parsed.rawTag + " (OSM sign node " + sign.id + ")"
             ))
         }
