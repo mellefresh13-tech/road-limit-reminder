@@ -20,10 +20,11 @@ class OverpassRoadParserTest {
     fun parsesPhysicalTrafficSignNodesAndDirectionTags() {
         val json = """{"elements":[
           {"type":"node","id":77,"lat":53.9,"lon":27.55,"tags":{"traffic_sign":"BY:3.24","maxspeed":"40","direction":"forward"}},
+          {"type":"node","id":78,"lat":53.9001,"lon":27.5501,"tags":{"traffic_sign:forward":"BY:3.24","maxspeed":"40"}},
           {"type":"way","id":123,"tags":{"highway":"primary","traffic_sign:forward":"BY:3.24","maxspeed:forward":"40"},"geometry":[{"lat":53.9,"lon":27.55},{"lat":53.91,"lon":27.56}]}
         ]}"""
         val data = OverpassRoadParser.parseData(json)
-        assertEquals(1, data.signs.size)
+        assertEquals(2, data.signs.size)
         assertEquals(77L, data.signs.first().id)
         assertEquals("40", data.signs.first().tags["maxspeed"])
         assertEquals("40", data.roads.first().tags["maxspeed:forward"])

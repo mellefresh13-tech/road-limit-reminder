@@ -19,6 +19,8 @@ class OverpassClient {
               way(around:1100,$latitude,$longitude)
                 ["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"];
               node(around:1100,$latitude,$longitude)["traffic_sign"];
+              node(around:1100,$latitude,$longitude)["traffic_sign:forward"];
+              node(around:1100,$latitude,$longitude)["traffic_sign:backward"];
               node(around:1100,$latitude,$longitude)["maxspeed"];
             );
             out tags geom;

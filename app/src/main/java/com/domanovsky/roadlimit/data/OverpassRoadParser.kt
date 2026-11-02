@@ -44,7 +44,8 @@ object OverpassRoadParser {
                 val lat = element.optDouble("lat", Double.NaN)
                 val lon = element.optDouble("lon", Double.NaN)
                 if (lat.isFinite() && lon.isFinite() &&
-                    (tags.containsKey("traffic_sign") || tags.containsKey("maxspeed"))
+                    (tags.containsKey("traffic_sign") || tags.containsKey("traffic_sign:forward") ||
+                        tags.containsKey("traffic_sign:backward") || tags.containsKey("maxspeed"))
                 ) {
                     signs += TrafficSign(element.optLong("id", -1L), GeoPoint(lat, lon), tags)
                 }

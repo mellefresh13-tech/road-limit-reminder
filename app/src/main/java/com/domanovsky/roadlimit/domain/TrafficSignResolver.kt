@@ -22,7 +22,9 @@ object TrafficSignResolver {
         if (current.distanceMetres > 30.0) return null
 
         val candidates = signs.mapNotNull { sign ->
-            val signKind = sign.tags["traffic_sign"].orEmpty()
+            val signKind = sign.tags["traffic_sign"]
+                ?: sign.tags["traffic_sign:forward"]
+                ?: sign.tags["traffic_sign:backward"].orEmpty()
             if (!Regex("""(^|[^0-9])3\.24([^0-9]|$)""").containsMatchIn(signKind)) return@mapNotNull null
             val signDirection = when (sign.tags["direction"]?.lowercase()) {
                 "forward" -> RoadDirection.FORWARD
