@@ -44,12 +44,12 @@ class TwoGisMapMatchingTest {
     fun choosesDetailedLimitAtCurrentOffsetInsteadOfWeightedEdgeAverage() {
         val edge = TwoGisEdge(
             id = 12345L,
-            distanceMetres = 111.3,
+            distanceMetres = 66.9,
             geometry = listOf(GeoPoint(53.0, 27.0), GeoPoint(53.0, 27.001)),
             speedLimitKmh = 50,
             speedLimits = listOf(
-                TwoGisSpeedInterval(0.0, 50.0, 60),
-                TwoGisSpeedInterval(50.0, 111.3, 40)
+                TwoGisSpeedInterval(0.0, 30.0, 60),
+                TwoGisSpeedInterval(30.0, 66.9, 40)
             )
         )
         val fix = LocationFix(
