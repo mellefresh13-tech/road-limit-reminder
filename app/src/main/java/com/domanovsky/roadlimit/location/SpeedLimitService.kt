@@ -276,14 +276,16 @@ class SpeedLimitService : Service(), LocationListener {
 
     private fun currentSpeed(location: Location): Float? {
         if (!location.hasSpeed() || !location.speed.isFinite()) return null
-        return if (country in MPH_COUNTRIES) location.speed * 2.23694f else location.speed * 3.6f
+        val usesMph = country?.uppercase(Locale.ROOT)?.let { it in MPH_COUNTRIES } == true
+        return if (usesMph) location.speed * 2.23694f else location.speed * 3.6f
     }
 
     private fun isFresh(location: Location): Boolean =
         SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos <= GPS_MAX_AGE_NANOS
 
     private fun publish(status: String, limit: SpeedLimit?, speed: Float?, detail: String?) {
-        val unit = limit?.unit ?: if (country in MPH_COUNTRIES) SpeedUnit.MILES_PER_HOUR else SpeedUnit.KILOMETRES_PER_HOUR
+        val usesMph = country?.uppercase(Locale.ROOT)?.let { it in MPH_COUNTRIES } == true
+        val unit = limit?.unit ?: if (usesMph) SpeedUnit.MILES_PER_HOUR else SpeedUnit.KILOMETRES_PER_HOUR
         val speedText = speed?.takeIf { it.isFinite() }?.let { "${it.roundToInt()} ${unit.label}" } ?: "—"
         sendBroadcast(Intent(ACTION_STATE).setPackage(packageName).apply {
             putExtra(EXTRA_LIMIT, limit?.value?.toString() ?: "—")
