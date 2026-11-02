@@ -24,6 +24,7 @@ sealed interface SpeedDatabaseLookup {
     data class NoLimit(val nearestDistanceMetres: Double?) : SpeedDatabaseLookup
     data object DatabaseUnavailable : SpeedDatabaseLookup
     data object Ambiguous : SpeedDatabaseLookup
+    data object GpsUnreliable : SpeedDatabaseLookup
 }
 
 data class SpeedDatabaseUpdate(
@@ -181,9 +182,10 @@ class OpenSpeedDatabaseManager(context: Context) {
         }
 
         val db = activeDatabase ?: return SpeedDatabaseLookup.DatabaseUnavailable
-        if (!latitude.isFinite() || !longitude.isFinite() ||
-            !accuracyMetres.isFinite() || accuracyMetres <= 0f || accuracyMetres > MAX_GPS_ACCURACY_METRES
-        ) return SpeedDatabaseLookup.NoLimit(null)
+        if (!accuracyMetres.isFinite() || accuracyMetres <= 0f || accuracyMetres > MAX_GPS_ACCURACY_METRES) {
+            return SpeedDatabaseLookup.GpsUnreliable
+        }
+        if (!latitude.isFinite() || !longitude.isFinite()) return SpeedDatabaseLookup.GpsUnreliable
 
         val maxDistance = max(MIN_MATCH_DISTANCE_METRES, min(MAX_MATCH_DISTANCE_METRES, accuracyMetres * 1.5))
         val mph = code.uppercase(Locale.ROOT) in MPH_COUNTRIES
@@ -253,7 +255,7 @@ class OpenSpeedDatabaseManager(context: Context) {
                 )
                 if (second != null &&
                     second!!.speed != selected.speed &&
-                    second!!.score - selected.score < AMBIGUOUS_MATCH_MARGIN_METRES
+                    second!!.score - selected.score < max(AMBIGUOUS_MATCH_MARGIN_METRES, accuracyMetres * GPS_AMBIGUITY_FACTOR)
                 ) {
                     return@use SpeedDatabaseLookup.Ambiguous
                 }
@@ -451,6 +453,7 @@ class OpenSpeedDatabaseManager(context: Context) {
         private const val MIN_MATCH_DISTANCE_METRES = 15.0
         private const val MAX_MATCH_DISTANCE_METRES = 40.0
         private const val AMBIGUOUS_MATCH_MARGIN_METRES = 3.0
+        private const val GPS_AMBIGUITY_FACTOR = 0.5
         private val MPH_COUNTRIES = setOf("GB", "US", "LR", "MM")
     }
 }
