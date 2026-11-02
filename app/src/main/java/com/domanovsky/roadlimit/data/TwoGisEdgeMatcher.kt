@@ -10,7 +10,7 @@ data class TwoGisEdgeMatch(
     val edge: TwoGisEdge,
     val distanceMetres: Double,
     val offsetMetres: Double,
-    val speedLimit: SpeedLimit.Known?
+    val speedLimit: SpeedLimit?
 )
 
 object TwoGisEdgeMatcher {
@@ -62,7 +62,7 @@ object TwoGisEdgeMatcher {
         ) return null
 
         val limit = best.speedLimit?.let {
-            SpeedLimit.Known(it, SpeedUnit.KILOMETRES_PER_HOUR, "2GIS edge ${best.edge.id}")
+            SpeedLimit(it, SpeedUnit.KILOMETRES_PER_HOUR, "2GIS edge ${best.edge.id}")
         }
         return TwoGisEdgeMatch(best.edge, best.projection.distanceMetres, best.projection.offsetMetres, limit)
     }
