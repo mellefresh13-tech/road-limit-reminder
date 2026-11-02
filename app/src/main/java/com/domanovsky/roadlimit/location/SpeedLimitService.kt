@@ -28,6 +28,7 @@ import androidx.core.graphics.drawable.IconCompat
 import com.domanovsky.roadlimit.MainActivity
 import com.domanovsky.roadlimit.data.OverpassClient
 import com.domanovsky.roadlimit.data.RoadCacheStore
+import com.domanovsky.roadlimit.data.TrafficSign
 import com.domanovsky.roadlimit.domain.LimitResolution
 import com.domanovsky.roadlimit.domain.LocationFix
 import com.domanovsky.roadlimit.domain.MatchResult
@@ -36,6 +37,7 @@ import com.domanovsky.roadlimit.domain.RoadMatcher
 import com.domanovsky.roadlimit.domain.RoadSegment
 import com.domanovsky.roadlimit.domain.SpeedLimit
 import com.domanovsky.roadlimit.domain.SpeedUnit
+import com.domanovsky.roadlimit.domain.TrafficSignResolver
 import java.util.concurrent.Executors
 
 class SpeedLimitService : Service(), LocationListener {
@@ -45,6 +47,7 @@ class SpeedLimitService : Service(), LocationListener {
     private val overpassClient = OverpassClient()
     private lateinit var roadCacheStore: RoadCacheStore
     private var roads: List<RoadSegment> = emptyList()
+    private var signs: List<TrafficSign> = emptyList()
     private var countryCode: String? = null
     private var insideSettlement: Boolean? = null
     private var lastFix: Location? = null
@@ -134,13 +137,18 @@ class SpeedLimitService : Service(), LocationListener {
         when (val match = RoadMatcher.match(location.toFix(), roads, previousWayId)) {
             is MatchResult.Matched -> {
                 previousWayId = match.road.id
-                when (val resolution = RoadLimitResolver.resolve(match.road.tags, countryCode, insideSettlement, match.direction)) {
+                val signLimit = TrafficSignResolver.resolve(match.road, location.toFix(), signs, roads, match.direction)
+                val resolution = signLimit?.let { LimitResolution.Known(it) }
+                    ?: RoadLimitResolver.resolve(match.road.tags, countryCode, insideSettlement, match.direction)
+                when (resolution) {
                     is LimitResolution.Known -> {
                         val fromBelarusRules = resolution.limit.rawTag.startsWith("BY:") ||
                             resolution.limit.rawTag.contains("ПДД РБ")
+                        val fromSignNode = resolution.limit.rawTag.contains("OSM sign node")
                         publish(
                             when {
                                 cachedFallbackActive -> "Сохранённые данные OSM — сеть недоступна"
+                                fromSignNode -> "Ограничение по физическому знаку OSM"
                                 fromBelarusRules -> "Базовое ограничение по ПДД РБ"
                                 else -> "Ограничение по данным OpenStreetMap"
                             },
@@ -170,6 +178,7 @@ class SpeedLimitService : Service(), LocationListener {
             if (cached != null) {
                 mainHandler.post {
                     roads = cached.data.roads
+                    signs = cached.data.signs
                     countryCode = cached.data.countryCode
                     insideSettlement = cached.data.insideSettlement
                     lastFetchLocation = requestedLocation
@@ -184,6 +193,7 @@ class SpeedLimitService : Service(), LocationListener {
                 roadCacheStore.write(latitude, longitude, loaded)
                 mainHandler.post {
                     roads = loaded.roads
+                    signs = loaded.signs
                     countryCode = loaded.countryCode
                     insideSettlement = loaded.insideSettlement
                     cachedFallbackActive = false
