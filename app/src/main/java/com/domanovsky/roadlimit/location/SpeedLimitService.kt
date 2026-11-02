@@ -118,11 +118,10 @@ class SpeedLimitService : Service(), LocationListener {
 
     override fun onLocationChanged(location: Location) {
         lastFix = location
-        if (roads.isEmpty()) {
-            publish("Получаем дорожные данные OSM…", null, location.speed, "GPS ±${location.accuracy.toInt()} м")
-        } else {
-            publishMatch(location)
-        }
+        // Keep the current loading/error state while no road data is available.
+        // Publishing "loading" on every GPS fix used to hide the failure message
+        // almost immediately after an Overpass request failed.
+        if (roads.isNotEmpty()) publishMatch(location)
         val moved = lastFetchLocation?.distanceTo(location)?.let { it >= RoadCacheStore.CACHE_RADIUS_METRES.toFloat() } ?: true
         val expired = System.currentTimeMillis() - lastFetchAt >= 6 * 60 * 60 * 1000L
         val neverFetched = lastFetchAt == 0L
@@ -174,7 +173,8 @@ class SpeedLimitService : Service(), LocationListener {
         val requestedLocation = Location(location)
         publish("Обновляем дорожные данные OSM…", null, location.speed, "GPS ±${location.accuracy.toInt()} м")
         networkExecutor.execute {
-            val cached = roadCacheStore.read(latitude, longitude)
+            // A broken local cache must not prevent the network request from running.
+            val cached = runCatching { roadCacheStore.read(latitude, longitude) }.getOrNull()
             if (cached != null) {
                 mainHandler.post {
                     roads = cached.data.roads
@@ -211,7 +211,7 @@ class SpeedLimitService : Service(), LocationListener {
                     lastFetchLocation = requestedLocation
                     if (cached == null) {
                         cachedFallbackActive = false
-                        publish("Не удалось загрузить OSM и нет сохранённых данных", null, null, null)
+                        publish(loadErrorStatus(error), null, lastFix?.speed, lastFix?.let { "GPS ±${it.accuracy.toInt()} м" })
                     } else {
                         cachedFallbackActive = true
                         val fix = lastFix
