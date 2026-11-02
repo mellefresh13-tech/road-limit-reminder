@@ -3,13 +3,6 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-val twoGisApiKey = providers.gradleProperty("DGIS_API_KEY")
-    .orElse(providers.environmentVariable("DGIS_API_KEY"))
-    .getOrElse("")
-val escapedTwoGisApiKey = twoGisApiKey
-    .replace("\\", "\\\\")
-    .replace("\"", "\\\"")
-
 android {
     namespace = "com.domanovsky.roadlimit"
     compileSdk = 36
@@ -21,7 +14,6 @@ android {
         versionCode = 5
         versionName = "0.5.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "DGIS_API_KEY", "\"$escapedTwoGisApiKey\"")
     }
 
     buildFeatures {
@@ -54,6 +46,8 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
+    implementation("org.apache.commons:commons-compress:1.28.0")
+    implementation("org.tukaani:xz:1.12")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }
