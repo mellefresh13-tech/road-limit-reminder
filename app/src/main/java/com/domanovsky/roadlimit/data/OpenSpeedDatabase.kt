@@ -84,11 +84,13 @@ class OpenSpeedDatabaseManager(context: Context) {
         }
 
         val lastAttempt = preferences.getLong(KEY_ATTEMPT_PREFIX + code, 0L)
-        if (System.currentTimeMillis() - lastAttempt < FAILED_DOWNLOAD_RETRY_MILLIS &&
-            !databaseFile(code).exists()
-        ) {
+        if (lastAttempt > 0L && System.currentTimeMillis() - lastAttempt < FAILED_DOWNLOAD_RETRY_MILLIS) {
+            val cached = openCached(code)
             return SpeedDatabaseUpdate(
-                false, false, "Повторная загрузка базы будет доступна позже", code
+                cached,
+                false,
+                "Следующая попытка обновления будет доступна позже",
+                code
             )
         }
         preferences.edit().putLong(KEY_ATTEMPT_PREFIX + code, System.currentTimeMillis()).apply()
@@ -112,21 +114,37 @@ class OpenSpeedDatabaseManager(context: Context) {
                 activeDatabase?.close()
                 activeDatabase = null
                 activeCountry = null
-                if (target.exists() && !target.delete()) {
-                    throw IllegalStateException("Не удалось заменить старую базу")
+
+                val backup = File(databaseDirectory, "$code.sqlite.previous")
+                backup.delete()
+                if (target.exists() && !target.renameTo(backup)) {
+                    throw IllegalStateException("Не удалось сохранить предыдущую базу")
                 }
-                if (!extracted.renameTo(target)) {
-                    extracted.copyTo(target, overwrite = true)
-                    extracted.delete()
+
+                try {
+                    if (!extracted.renameTo(target)) {
+                        extracted.copyTo(target, overwrite = true)
+                        extracted.delete()
+                    }
+                    val opened = SQLiteDatabase.openDatabase(
+                        target.absolutePath,
+                        null,
+                        SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS
+                    )
+                    try {
+                        verifySchema(opened)
+                    } catch (error: Exception) {
+                        opened.close()
+                        throw error
+                    }
+                    activeDatabase = opened
+                    activeCountry = code
+                    backup.delete()
+                } catch (error: Exception) {
+                    target.delete()
+                    if (backup.exists()) backup.renameTo(target)
+                    throw error
                 }
-                val opened = SQLiteDatabase.openDatabase(
-                    target.absolutePath,
-                    null,
-                    SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS
-                )
-                verifySchema(opened)
-                activeDatabase = opened
-                activeCountry = code
             }
 
             preferences.edit()
@@ -187,7 +205,8 @@ class OpenSpeedDatabaseManager(context: Context) {
 
         return try {
             val latitudeMargin = maxDistance / METRES_PER_DEGREE
-            val longitudeMargin = maxDistance / (METRES_PER_DEGREE * cos(Math.toRadians(latitude))).coerceAtLeast(MIN_LONGITUDE_SCALE)
+            val longitudeScale = (METRES_PER_DEGREE * cos(Math.toRadians(latitude)).absoluteValue).coerceAtLeast(MIN_LONGITUDE_SCALE)
+            val longitudeMargin = maxDistance / longitudeScale
             db.rawQuery(
                 sql,
                 arrayOf(
@@ -205,7 +224,8 @@ class OpenSpeedDatabaseManager(context: Context) {
                     val speed = cursor.getInt(6)
                     if (speed !in MIN_VALID_SPEED..MAX_VALID_SPEED) continue
                     val encodedPolyline = cursor.getString(5) ?: continue
-                    val points = EncodedRoadPolyline.decode(encodedPolyline)
+                    val points = runCatching { EncodedRoadPolyline.decode(encodedPolyline) }.getOrNull()
+                        ?: continue
                     if (points.size < 2) continue
 
                     val projection = RoadGeometryMatcher.project(
@@ -247,7 +267,7 @@ class OpenSpeedDatabaseManager(context: Context) {
                 )
             }
         } catch (_: Exception) {
-            SpeedDatabaseLookup.NoLimit(null)
+            SpeedDatabaseLookup.DatabaseUnavailable
         }
     }
 
