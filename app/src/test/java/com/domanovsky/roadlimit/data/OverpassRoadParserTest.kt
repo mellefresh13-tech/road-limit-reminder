@@ -30,6 +30,38 @@ class OverpassRoadParserTest {
     }
 
     @Test
+    fun parsesBelarusCountryAndSettlementAreas() {
+        val json = """
+            {
+              "elements": [
+                {"type":"area","id":1,"tags":{"boundary":"administrative","admin_level":"2","ISO3166-1":"BY"}},
+                {"type":"area","id":2,"tags":{"place":"city","name":"Minsk"}},
+                {"type":"way","id":123,"tags":{"highway":"primary"},"geometry":[{"lat":53.9,"lon":27.55},{"lat":53.91,"lon":27.56}]}
+              ]
+            }
+        """.trimIndent()
+
+        val data = OverpassRoadParser.parseData(json)
+        assertEquals("BY", data.countryCode)
+        assertEquals(true, data.insideSettlement)
+        assertEquals(1, data.roads.size)
+    }
+
+    @Test
+    fun identifiesOutsideSettlementOnlyWhenCountryAreaWasReturned() {
+        val json = """
+            {
+              "elements": [
+                {"type":"area","id":1,"tags":{"boundary":"administrative","admin_level":"2","ISO3166-1":"BY"}}
+              ]
+            }
+        """.trimIndent()
+        val data = OverpassRoadParser.parseData(json)
+        assertEquals("BY", data.countryCode)
+        assertEquals(false, data.insideSettlement)
+    }
+
+    @Test
     fun skipsPrivateRoadsAndIncompleteGeometry() {
         val json = """
             {
