@@ -10,6 +10,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -19,6 +24,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
+import androidx.core.graphics.drawable.IconCompat
 import com.domanovsky.roadlimit.MainActivity
 import com.domanovsky.roadlimit.data.OverpassClient
 import com.domanovsky.roadlimit.domain.LimitResolution
@@ -28,6 +34,7 @@ import com.domanovsky.roadlimit.domain.RoadLimitResolver
 import com.domanovsky.roadlimit.domain.RoadMatcher
 import com.domanovsky.roadlimit.domain.RoadSegment
 import com.domanovsky.roadlimit.domain.SpeedLimit
+import com.domanovsky.roadlimit.domain.SpeedUnit
 import java.util.concurrent.Executors
 
 class SpeedLimitService : Service(), LocationListener {
@@ -36,6 +43,8 @@ class SpeedLimitService : Service(), LocationListener {
     private val networkExecutor = Executors.newSingleThreadExecutor()
     private val overpassClient = OverpassClient()
     private var roads: List<RoadSegment> = emptyList()
+    private var countryCode: String? = null
+    private var insideSettlement: Boolean? = null
     private var lastFix: Location? = null
     private var lastFetchLocation: Location? = null
     private var lastFetchAt = 0L
@@ -70,7 +79,7 @@ class SpeedLimitService : Service(), LocationListener {
     }
 
     private fun startAsForeground() {
-        val notification = buildNotification("Ожидание GPS")
+        val notification = buildNotification("Road Limit Reminder", "Ожидание GPS", null)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
         } else {
@@ -121,11 +130,17 @@ class SpeedLimitService : Service(), LocationListener {
         when (val match = RoadMatcher.match(location.toFix(), roads, previousWayId)) {
             is MatchResult.Matched -> {
                 previousWayId = match.road.id
-                when (val resolution = RoadLimitResolver.resolve(match.road.tags)) {
-                    is LimitResolution.Known -> publish(
-                        "Дорога определена • ±${match.distanceMetres.toInt()} м",
-                        resolution.limit, location.speed, match.road.name ?: match.road.highway
-                    )
+                when (val resolution = RoadLimitResolver.resolve(match.road.tags, countryCode, insideSettlement)) {
+                    is LimitResolution.Known -> {
+                        val fromBelarusRules = resolution.limit.rawTag.startsWith("BY:") ||
+                            resolution.limit.rawTag.contains("ПДД РБ")
+                        publish(
+                            if (fromBelarusRules) "Базовое ограничение по ПДД РБ" else "Ограничение по данным OpenStreetMap",
+                            resolution.limit,
+                            location.speed,
+                            match.road.name ?: match.road.highway
+                        )
+                    }
                     is LimitResolution.Unavailable -> publish(
                         resolution.reason, null, location.speed, match.road.name ?: match.road.highway
                     )
@@ -146,7 +161,9 @@ class SpeedLimitService : Service(), LocationListener {
             try {
                 val loaded = overpassClient.loadNearby(latitude, longitude)
                 mainHandler.post {
-                    roads = loaded
+                    roads = loaded.roads
+                    countryCode = loaded.countryCode
+                    insideSettlement = loaded.insideSettlement
                     lastFetchLocation = requestedLocation
                     lastFetchAt = System.currentTimeMillis()
                     fetching = false
@@ -174,7 +191,7 @@ class SpeedLimitService : Service(), LocationListener {
 
     private fun publish(status: String, limit: SpeedLimit.Known?, speed: Float?, detail: String?) {
         val speedText = speed?.takeIf { it.isFinite() }?.let {
-            if (limit?.unit == com.domanovsky.roadlimit.domain.SpeedUnit.MILES_PER_HOUR) {
+            if (limit?.unit == SpeedUnit.MILES_PER_HOUR) {
                 "${(it * 2.23694f).toInt()} mph"
             } else {
                 "${(it * 3.6f).toInt()} км/ч"
@@ -189,11 +206,16 @@ class SpeedLimitService : Service(), LocationListener {
             putExtra(EXTRA_KNOWN, limit != null)
         }
         sendBroadcast(stateIntent)
-        val notificationText = if (limit != null) "Лимит ${limit.value} ${limit.unit.label}" else status
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(notificationText))
+
+        val title = limit?.let { "${it.value} ${it.unit.label}" } ?: "Road Limit Reminder"
+        val body = if (limit != null) listOf(status, detail.orEmpty()).filter { it.isNotBlank() }.joinToString(" • ") else status
+        getSystemService(NotificationManager::class.java).notify(
+            NOTIFICATION_ID,
+            buildNotification(title, body, limit)
+        )
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(title: String, text: String, limit: SpeedLimit.Known?): Notification {
         val openIntent = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -203,14 +225,39 @@ class SpeedLimitService : Service(), LocationListener {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setContentTitle("Road Limit Reminder")
+            .setSmallIcon(notificationIcon(limit))
+            .setContentTitle(title)
             .setContentText(text)
             .setContentIntent(openIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .addAction(android.R.drawable.ic_media_pause, "Остановить", stopIntent)
             .build()
+    }
+
+    /**
+     * The status-bar icon is an alpha-only speed sign. Android applies its own
+     * notification tint, so the circle and digits remain legible in the tray.
+     */
+    private fun notificationIcon(limit: SpeedLimit.Known?): IconCompat {
+        if (limit == null) {
+            return IconCompat.createWithResource(this, android.R.drawable.ic_menu_mylocation)
+        }
+        val size = 96
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.STROKE
+            strokeWidth = 7f
+        }
+        canvas.drawCircle(48f, 48f, 40f, paint)
+        paint.style = Paint.Style.FILL
+        paint.textAlign = Paint.Align.CENTER
+        paint.typeface = Typeface.create("sans-serif", Typeface.BOLD)
+        paint.textSize = if (limit.value >= 100) 27f else 34f
+        canvas.drawText(limit.value.toString(), 48f, 60f, paint)
+        return IconCompat.createWithBitmap(bitmap)
     }
 
     private fun createNotificationChannel() {
