@@ -1,3 +1,10 @@
+val twoGisApiKey = providers.gradleProperty("DGIS_API_KEY")
+    .orElse(providers.environmentVariable("DGIS_API_KEY"))
+    .getOrElse("")
+val escapedTwoGisApiKey = twoGisApiKey
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,9 +19,14 @@ android {
         applicationId = "com.domanovsky.roadlimit"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "DGIS_API_KEY", "\"$escapedTwoGisApiKey\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {
