@@ -374,7 +374,7 @@ class SpeedLimitService : Service(), LocationListener {
             .build()
     }
 
-    private fun notificationIcon(limit: SpeedLimit.Known?): IconCompat {
+    private fun notificationIcon(limit: SpeedLimit?): IconCompat {
         if (limit == null) {
             return IconCompat.createWithResource(this, android.R.drawable.ic_menu_mylocation)
         }
