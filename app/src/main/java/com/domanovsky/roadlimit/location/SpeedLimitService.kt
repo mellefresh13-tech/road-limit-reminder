@@ -250,6 +250,8 @@ class SpeedLimitService : Service(), LocationListener {
     private fun updateFromMatchedEdges(location: Location): Boolean {
         if (!isFresh(location) || matchedEdges.isEmpty()) return false
         val match = matchCurrentFix(location) ?: return false
+        consecutiveFailures = 0
+        nextRetryAt = 0L
         publishMatched(match, location)
         return true
     }
