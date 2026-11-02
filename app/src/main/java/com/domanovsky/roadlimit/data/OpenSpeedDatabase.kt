@@ -186,11 +186,15 @@ class OpenSpeedDatabaseManager(context: Context) {
         """.trimIndent()
 
         return try {
+            val latitudeMargin = maxDistance / METRES_PER_DEGREE
+            val longitudeMargin = maxDistance / (METRES_PER_DEGREE * cos(Math.toRadians(latitude))).coerceAtLeast(MIN_LONGITUDE_SCALE)
             db.rawQuery(
                 sql,
                 arrayOf(
-                    latitude.toString(), latitude.toString(),
-                    longitude.toString(), longitude.toString()
+                    (latitude + latitudeMargin).toString(),
+                    (latitude - latitudeMargin).toString(),
+                    (longitude + longitudeMargin).toString(),
+                    (longitude - longitudeMargin).toString()
                 )
             ).use { cursor ->
                 var best: Candidate? = null
@@ -419,6 +423,8 @@ class OpenSpeedDatabaseManager(context: Context) {
         private const val MAX_SQLITE_SIZE_BYTES = 500L * 1024L * 1024L
         private const val DATABASE_REFRESH_INTERVAL_MILLIS = 30L * 24L * 60L * 60L * 1000L
         private const val FAILED_DOWNLOAD_RETRY_MILLIS = 10L * 60L * 1000L
+        private const val METRES_PER_DEGREE = 111_320.0
+        private const val MIN_LONGITUDE_SCALE = 1.0
         private const val MIN_VALID_SPEED = 1
         private const val MAX_VALID_SPEED = 300
         private const val MAX_GPS_ACCURACY_METRES = 40f
