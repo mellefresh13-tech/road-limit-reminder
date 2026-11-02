@@ -98,7 +98,7 @@ class MainActivity : Activity() {
             setOnClickListener { onTrackingButtonClicked() }
         }
         val attribution = TextView(this).apply {
-            text = "© 2ГИС • dev.2gis.ru\nGPS-координаты передаются в 2ГИС для определения дороги и ограничения скорости."
+            text = "© OpenStreetMap contributors • ODbL 1.0\\nБазы скоростных ограничений: HvdWolf / SpeedAlert_Databases • CC BY 4.0."
             textSize = 11f
             setTextColor(0xFF78909C.toInt())
             gravity = Gravity.CENTER
