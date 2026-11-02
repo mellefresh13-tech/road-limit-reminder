@@ -447,7 +447,7 @@ class OpenSpeedDatabaseManager(context: Context) {
         private const val MAX_ARCHIVE_SIZE_BYTES = 100L * 1024L * 1024L
         private const val MIN_SQLITE_SIZE = 4_096L
         private const val MAX_SQLITE_SIZE_BYTES = 500L * 1024L * 1024L
-        private const val DATABASE_REFRESH_INTERVAL_MILLIS = 30L * 24L * 60L * 60L * 1000L
+        private const val DATABASE_REFRESH_INTERVAL_MILLIS = 24L * 60L * 60L * 1000L
         private const val FAILED_DOWNLOAD_RETRY_MILLIS = 10L * 60L * 1000L
         private const val METRES_PER_DEGREE = 111_320.0
         private const val MIN_LONGITUDE_SCALE = 1.0
