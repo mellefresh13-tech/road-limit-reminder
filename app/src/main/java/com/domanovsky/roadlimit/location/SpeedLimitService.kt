@@ -45,6 +45,7 @@ class SpeedLimitService : Service(), LocationListener {
     private var dbUpdating = false
     private var countryLookup = false
     private var roadLookup = false
+    private var nextDatabaseAttemptAt = 0L
     private var lastCountryCheck = 0L
     private var lastCountryLocation: Location? = null
 
@@ -117,12 +118,21 @@ class SpeedLimitService : Service(), LocationListener {
             if (country == null) publish("Определяем страну по GPS…", null, currentSpeed(location), null)
             return
         }
+        val countryCode = country ?: return
         if (!dbReady) {
+            if (!dbUpdating && System.currentTimeMillis() >= nextDatabaseAttemptAt) {
+                prepareDatabase(countryCode)
+            }
             publish(
                 if (dbUpdating) "Загружаем открытую базу дорог…" else "Локальная база дорог недоступна",
-                null, currentSpeed(location), country
+                null, currentSpeed(location), countryCode
             )
             return
+        }
+        if (!dbUpdating && databases.shouldRefresh(countryCode) &&
+            System.currentTimeMillis() >= nextDatabaseAttemptAt
+        ) {
+            prepareDatabase(countryCode)
         }
         runLocalLookup()
     }
@@ -177,6 +187,7 @@ class SpeedLimitService : Service(), LocationListener {
 
         if (!dbReady || databases.shouldRefresh(code)) {
             dbUpdating = true
+            nextDatabaseAttemptAt = System.currentTimeMillis() + DATABASE_RETRY_MILLIS
             worker.execute {
                 val update = databases.downloadAndInstall(code)
                 val ready = databases.openCached(code)
@@ -184,6 +195,7 @@ class SpeedLimitService : Service(), LocationListener {
                     dbUpdating = false
                     if (!active || country != code) return@post
                     dbReady = ready
+                    nextDatabaseAttemptAt = if (update.updated) 0L else System.currentTimeMillis() + DATABASE_RETRY_MILLIS
                     if (ready) {
                         publish(
                             if (update.updated) "База OpenStreetMap обновлена" else "Используется сохранённая база OpenStreetMap",
@@ -373,6 +385,7 @@ class SpeedLimitService : Service(), LocationListener {
         private const val NOTIFICATION_ID = 71
         private const val GPS_MAX_AGE_NANOS = 15_000_000_000L
         private const val COUNTRY_RETRY_MILLIS = 30_000L
+        private const val DATABASE_RETRY_MILLIS = 10 * 60 * 1000L
         private val MPH_COUNTRIES = setOf("GB", "US", "LR", "MM")
     }
 }
