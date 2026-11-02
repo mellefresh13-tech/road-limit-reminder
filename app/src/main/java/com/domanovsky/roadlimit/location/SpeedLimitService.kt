@@ -251,9 +251,15 @@ class SpeedLimitService : Service(), LocationListener {
                         )
                     }
                     is SpeedDatabaseLookup.NoLimit -> publish(
-                        "Для этой дороги в OSM не указано ограничение",
+                        if (result.nearestDistanceMetres != null) "Не удалось уверенно сопоставить GPS с дорожным сегментом"
+                        else "В базе OSM нет подходящего ограничения для этой позиции",
                         null, currentSpeed(newest),
                         result.nearestDistanceMetres?.let { "Ближайший сегмент: ${it.toInt()} м" }
+                    )
+                    SpeedDatabaseLookup.GpsUnreliable -> publish(
+                        "Недостаточная точность GPS для выбора дороги",
+                        null, currentSpeed(newest),
+                        "Ожидаем более точную координату"
                     )
                     SpeedDatabaseLookup.Ambiguous -> publish(
                         "Рядом несколько дорог с разными ограничениями", null,
