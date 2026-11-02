@@ -27,6 +27,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.IconCompat
 import com.domanovsky.roadlimit.MainActivity
 import com.domanovsky.roadlimit.data.OverpassClient
+import com.domanovsky.roadlimit.data.RoadCacheStore
 import com.domanovsky.roadlimit.domain.LimitResolution
 import com.domanovsky.roadlimit.domain.LocationFix
 import com.domanovsky.roadlimit.domain.MatchResult
@@ -42,6 +43,7 @@ class SpeedLimitService : Service(), LocationListener {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val networkExecutor = Executors.newSingleThreadExecutor()
     private val overpassClient = OverpassClient()
+    private lateinit var roadCacheStore: RoadCacheStore
     private var roads: List<RoadSegment> = emptyList()
     private var countryCode: String? = null
     private var insideSettlement: Boolean? = null
@@ -65,6 +67,7 @@ class SpeedLimitService : Service(), LocationListener {
     override fun onCreate() {
         super.onCreate()
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        roadCacheStore = RoadCacheStore(this)
         createNotificationChannel()
     }
 
@@ -117,8 +120,8 @@ class SpeedLimitService : Service(), LocationListener {
         } else {
             publishMatch(location)
         }
-        val moved = lastFetchLocation?.distanceTo(location)?.let { it >= 300f } ?: true
-        val expired = System.currentTimeMillis() - lastFetchAt >= 120_000L
+        val moved = lastFetchLocation?.distanceTo(location)?.let { it >= RoadCacheStore.CACHE_RADIUS_METRES.toFloat() } ?: true
+        val expired = System.currentTimeMillis() - lastFetchAt >= 6 * 60 * 60 * 1000L
         val neverFetched = lastFetchAt == 0L
         if (!fetching && (neverFetched || moved || expired)) fetchRoads(location)
     }
@@ -131,7 +134,7 @@ class SpeedLimitService : Service(), LocationListener {
         when (val match = RoadMatcher.match(location.toFix(), roads, previousWayId)) {
             is MatchResult.Matched -> {
                 previousWayId = match.road.id
-                when (val resolution = RoadLimitResolver.resolve(match.road.tags, countryCode, insideSettlement)) {
+                when (val resolution = RoadLimitResolver.resolve(match.road.tags, countryCode, insideSettlement, match.direction)) {
                     is LimitResolution.Known -> {
                         val fromBelarusRules = resolution.limit.rawTag.startsWith("BY:") ||
                             resolution.limit.rawTag.contains("ПДД РБ")
@@ -163,8 +166,22 @@ class SpeedLimitService : Service(), LocationListener {
         val requestedLocation = Location(location)
         publish("Обновляем дорожные данные OSM…", null, location.speed, "GPS ±${location.accuracy.toInt()} м")
         networkExecutor.execute {
+            val cached = roadCacheStore.read(latitude, longitude)
+            if (cached != null) {
+                mainHandler.post {
+                    roads = cached.data.roads
+                    countryCode = cached.data.countryCode
+                    insideSettlement = cached.data.insideSettlement
+                    lastFetchLocation = requestedLocation
+                    lastFetchAt = cached.fetchedAtMillis
+                    val fix = lastFix
+                    if (fix != null && isFresh(fix)) publishMatch(fix)
+                    else publish("Используются сохранённые данные OSM", null, null, null)
+                }
+            }
             try {
                 val loaded = overpassClient.loadNearby(latitude, longitude)
+                roadCacheStore.write(latitude, longitude, loaded)
                 mainHandler.post {
                     roads = loaded.roads
                     countryCode = loaded.countryCode
@@ -175,14 +192,22 @@ class SpeedLimitService : Service(), LocationListener {
                     fetching = false
                     val fix = lastFix
                     if (fix != null && isFresh(fix)) publishMatch(fix)
-                    else publish("Данные OSM загружены. Ожидание актуального GPS…", null, null, null)
+                    else publish("Данные OSM обновлены. Ожидание актуального GPS…", null, null, null)
                 }
             } catch (error: Exception) {
                 mainHandler.post {
                     fetching = false
-                    lastFetchAt = System.currentTimeMillis()
-                    lastFetchLocation = lastFix
-                    publish("Не удалось загрузить OSM. Проверьте интернет", null, null, null)
+                    lastFetchAt = System.currentTimeMillis() - (6 * 60 * 60 * 1000L) + (10 * 60 * 1000L)
+                    lastFetchLocation = requestedLocation
+                    if (cached == null) {
+                        cachedFallbackActive = false
+                        publish("Не удалось загрузить OSM и нет сохранённых данных", null, null, null)
+                    } else {
+                        cachedFallbackActive = true
+                        val fix = lastFix
+                        if (fix != null && isFresh(fix)) publishMatch(fix)
+                        else publish("Сеть недоступна — доступны сохранённые данные OSM", null, null, null)
+                    }
                 }
             }
         }
