@@ -5,15 +5,42 @@ import com.domanovsky.roadlimit.domain.RoadSegment
 import org.json.JSONObject
 
 object OverpassRoadParser {
-    fun parse(json: String): List<RoadSegment> {
-        val elements = JSONObject(json).optJSONArray("elements") ?: return emptyList()
+    private val settlementPlaces = setOf(
+        "city", "town", "village", "hamlet", "suburb", "quarter", "neighbourhood"
+    )
+
+    fun parse(json: String): List<RoadSegment> = parseData(json).roads
+
+    fun parseData(json: String): NearbyRoadData {
+        val elements = JSONObject(json).optJSONArray("elements") ?: return NearbyRoadData(emptyList(), null, null)
         val roads = ArrayList<RoadSegment>(elements.length())
+        var countryCode: String? = null
+        var insideSettlement = false
+        var countryAreaFound = false
+
         for (index in 0 until elements.length()) {
             val element = elements.optJSONObject(index) ?: continue
-            if (element.optString("type") != "way") continue
-            val id = element.optLong("id", -1L)
+            val type = element.optString("type")
             val tagsJson = element.optJSONObject("tags") ?: continue
-            val highway = tagsJson.optString("highway").takeIf { it.isNotBlank() } ?: continue
+            val tags = LinkedHashMap<String, String>()
+            val keys = tagsJson.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                tags[key] = tagsJson.optString(key)
+            }
+
+            if (type == "area") {
+                if (tags["boundary"] == "administrative" && tags["admin_level"] == "2") {
+                    countryAreaFound = true
+                    countryCode = tags["ISO3166-1"] ?: tags["ISO3166-1:alpha2"] ?: countryCode
+                }
+                if (tags["place"] in settlementPlaces) insideSettlement = true
+                continue
+            }
+            if (type != "way") continue
+
+            val id = element.optLong("id", -1L)
+            val highway = tags["highway"]?.takeIf { it.isNotBlank() } ?: continue
             val geometryJson = element.optJSONArray("geometry") ?: continue
             if (geometryJson.length() < 2) continue
             val geometry = ArrayList<GeoPoint>(geometryJson.length())
@@ -24,17 +51,17 @@ object OverpassRoadParser {
                 if (lat.isFinite() && lon.isFinite()) geometry += GeoPoint(lat, lon)
             }
             if (geometry.size < 2) continue
-            val tags = LinkedHashMap<String, String>()
-            val keys = tagsJson.keys()
-            while (keys.hasNext()) {
-                val key = keys.next()
-                tags[key] = tagsJson.optString(key)
-            }
             if (tags["access"] == "no" || tags["motor_vehicle"] == "no" ||
                 tags["motorcar"] == "no" || tags["access"] == "private"
             ) continue
             roads += RoadSegment(id, tags["name"] ?: tags["ref"], highway, tags, geometry)
         }
-        return roads
+
+        val settlementState = when {
+            insideSettlement -> true
+            countryAreaFound -> false
+            else -> null
+        }
+        return NearbyRoadData(roads, countryCode, settlementState)
     }
 }
