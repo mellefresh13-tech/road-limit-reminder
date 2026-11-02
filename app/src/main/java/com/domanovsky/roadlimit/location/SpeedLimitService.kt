@@ -324,14 +324,22 @@ class SpeedLimitService : Service(), LocationListener {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             style = Paint.Style.STROKE
-            strokeWidth = 7f
+            strokeWidth = 6f
         }
         canvas.drawCircle(48f, 48f, 40f, paint)
         paint.style = Paint.Style.FILL
         paint.textAlign = Paint.Align.CENTER
-        paint.typeface = Typeface.create("sans-serif", Typeface.BOLD)
-        paint.textSize = if (limit.value >= 100) 27f else 34f
-        canvas.drawText(limit.value.toString(), 48f, 60f, paint)
+        paint.typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+        val label = limit.value.toString()
+        paint.textSize = 48f
+        val availableTextWidth = 68f
+        val measuredTextWidth = paint.measureText(label)
+        if (measuredTextWidth > availableTextWidth) {
+            paint.textSize *= availableTextWidth / measuredTextWidth
+        }
+        val fontMetrics = paint.fontMetrics
+        val baseline = 48f - (fontMetrics.ascent + fontMetrics.descent) / 2f
+        canvas.drawText(label, 48f, baseline, paint)
         return IconCompat.createWithBitmap(bitmap)
     }
 
