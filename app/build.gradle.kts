@@ -1,15 +1,15 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.kapt")
+}
+
 val twoGisApiKey = providers.gradleProperty("DGIS_API_KEY")
     .orElse(providers.environmentVariable("DGIS_API_KEY"))
     .getOrElse("")
 val escapedTwoGisApiKey = twoGisApiKey
     .replace("\\", "\\\\")
     .replace("\"", "\\\"")
-
-plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.kapt")
-}
 
 android {
     namespace = "com.domanovsky.roadlimit"
