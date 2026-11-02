@@ -36,8 +36,7 @@ data class TwoGisEdge(
 data class TwoGisMatchResult(
     val edges: List<TwoGisEdge>,
     val currentEdgeId: Long?,
-    val matchedPoint: com.domanovsky.roadlimit.domain.GeoPoint?,
-    val rawResponse: String
+    val matchedPoint: com.domanovsky.roadlimit.domain.GeoPoint?
 )
 
 class TwoGisMapMatchingClient(private val apiKey: String) {
@@ -148,7 +147,7 @@ object TwoGisResponseParser {
                 matchedPoint = com.domanovsky.roadlimit.domain.GeoPoint(lat, lon)
             }
         }
-        return TwoGisMatchResult(edges, currentEdgeId, matchedPoint, json)
+        return TwoGisMatchResult(edges, currentEdgeId, matchedPoint)
     }
 
     private fun parseLineString(wkt: String): List<com.domanovsky.roadlimit.domain.GeoPoint> {
@@ -165,40 +164,3 @@ object TwoGisResponseParser {
     }
 }
 
-data class CachedTwoGisMatch(
-    val result: TwoGisMatchResult,
-    val savedAtMillis: Long
-)
-
-class TwoGisMatchCache(context: Context) {
-    private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
-
-    fun read(now: Long = System.currentTimeMillis()): CachedTwoGisMatch? {
-        val savedAt = preferences.getLong(KEY_SAVED_AT, 0L)
-        val payload = preferences.getString(KEY_RESPONSE, null) ?: return null
-        if (savedAt <= 0L || now < savedAt || now - savedAt > MAX_AGE_MILLIS) {
-            clear()
-            return null
-        }
-        return runCatching { CachedTwoGisMatch(TwoGisResponseParser.parse(payload), savedAt) }
-            .getOrNull()
-    }
-
-    fun write(result: TwoGisMatchResult, now: Long = System.currentTimeMillis()) {
-        preferences.edit()
-            .putString(KEY_RESPONSE, result.rawResponse)
-            .putLong(KEY_SAVED_AT, now)
-            .apply()
-    }
-
-    fun clear() {
-        preferences.edit().remove(KEY_RESPONSE).remove(KEY_SAVED_AT).apply()
-    }
-
-    companion object {
-        private const val PREFERENCES = "two_gis_match_cache"
-        private const val KEY_RESPONSE = "last_match_response"
-        private const val KEY_SAVED_AT = "saved_at"
-        private const val MAX_AGE_MILLIS = 24 * 60 * 60 * 1000L
-    }
-}
