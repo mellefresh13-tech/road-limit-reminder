@@ -34,7 +34,7 @@ object OverpassRoadParser {
                     countryAreaFound = true
                     countryCode = tags["ISO3166-1"] ?: tags["ISO3166-1:alpha2"] ?: countryCode
                 }
-                if (tags["place"] in settlementPlaces) insideSettlement = true
+                tags["place"]?.let { if (it in settlementPlaces) insideSettlement = true }
                 continue
             }
             if (type != "way") continue
