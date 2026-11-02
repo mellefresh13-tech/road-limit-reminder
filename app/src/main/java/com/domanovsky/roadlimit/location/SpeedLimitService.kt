@@ -189,7 +189,6 @@ class SpeedLimitService : Service(), LocationListener {
         if (newestFix.accuracy > MAX_API_ACCURACY_METRES ||
             newestFix.time - newestSample.time > MAX_SAMPLE_AGE_FOR_REQUEST_MILLIS
         ) return
-        if (samples.last().time - samples.first().time > MAX_QUERY_SPAN_MILLIS) return
 
         val queryPoints = samples.map { it.toTwoGisPoint() }
         requestInFlight = true
@@ -200,21 +199,22 @@ class SpeedLimitService : Service(), LocationListener {
                 mainHandler.post {
                     requestInFlight = false
                     if (!trackingActive) return@post
-                    consecutiveFailures = 0
-                    nextRetryAt = System.currentTimeMillis() + SUCCESSFUL_REQUEST_COOLDOWN_MILLIS
                     matchedEdges = result.edges
 
                     val fix = lastFix
                     val matched = fix?.takeIf(::isFresh)?.let { matchCurrentFix(it, result) }
                     if (fix != null && matched != null) {
+                        consecutiveFailures = 0
+                        nextRetryAt = System.currentTimeMillis() + SUCCESSFUL_REQUEST_COOLDOWN_MILLIS
                         publishMatched(matched, fix)
                     } else {
+                        val backoff = scheduleRetry()
                         clearDisplayedLimit()
                         publish(
                             "2ГИС получил GPS-трек, но текущая дорога пока не подтверждена",
                             null,
                             fix?.let(::currentSpeed),
-                            "Участков в ответе: ${result.edges.size}"
+                            "Повтор через ${backoff / 1000} с • Участков: ${result.edges.size}"
                         )
                     }
                 }
@@ -222,12 +222,7 @@ class SpeedLimitService : Service(), LocationListener {
                 mainHandler.post {
                     requestInFlight = false
                     if (!trackingActive) return@post
-                    consecutiveFailures++
-                    val backoff = min(
-                        MAX_RETRY_DELAY_MILLIS,
-                        INITIAL_RETRY_DELAY_MILLIS * (1L shl min(consecutiveFailures - 1, MAX_BACKOFF_EXPONENT))
-                    )
-                    nextRetryAt = System.currentTimeMillis() + backoff
+                    val backoff = scheduleRetry()
                     val fix = lastFix
                     if (fix == null || !isFresh(fix) || !updateFromMatchedEdges(fix)) {
                         publish(
@@ -306,6 +301,16 @@ class SpeedLimitService : Service(), LocationListener {
 
     private fun isFresh(location: Location): Boolean =
         SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos <= GPS_MAX_AGE_NANOS
+
+    private fun scheduleRetry(): Long {
+        consecutiveFailures++
+        val backoff = min(
+            MAX_RETRY_DELAY_MILLIS,
+            INITIAL_RETRY_DELAY_MILLIS * (1L shl min(consecutiveFailures - 1, MAX_BACKOFF_EXPONENT))
+        )
+        nextRetryAt = System.currentTimeMillis() + backoff
+        return backoff
+    }
 
     private fun mapMatchingError(error: Exception): String {
         val cause = generateSequence<Throwable>(error) { it.cause }
@@ -467,7 +472,6 @@ class SpeedLimitService : Service(), LocationListener {
         private const val MIN_SAMPLE_GAP_MILLIS = 1_000L
         private const val MAX_SAMPLE_GAP_MILLIS = 10_000L
         private const val MAX_SAMPLE_AGE_FOR_REQUEST_MILLIS = 2_000L
-        private const val MAX_QUERY_SPAN_MILLIS = 10_000L
         private const val MIN_QUERY_POINTS = 2
         private const val MAX_QUERY_POINTS = 10
         private const val SUCCESSFUL_REQUEST_COOLDOWN_MILLIS = 2_000L
