@@ -66,6 +66,7 @@ class TwoGisMapMatchingClient(private val apiKey: String) {
             connection.connectTimeout = CONNECT_TIMEOUT_MILLIS
             connection.readTimeout = READ_TIMEOUT_MILLIS
             connection.doOutput = true
+            connection.setRequestProperty("User-Agent", "RoadLimitReminder/0.5 (Android; com.domanovsky.roadlimit)")
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
             connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
