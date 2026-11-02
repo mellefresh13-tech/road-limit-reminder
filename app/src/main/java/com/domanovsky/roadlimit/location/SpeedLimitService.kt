@@ -354,7 +354,7 @@ class SpeedLimitService : Service(), LocationListener {
         )
     }
 
-    private fun buildNotification(title: String, text: String, limit: SpeedLimit.Known?): Notification {
+    private fun buildNotification(title: String, text: String, limit: SpeedLimit?): Notification {
         val openIntent = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
