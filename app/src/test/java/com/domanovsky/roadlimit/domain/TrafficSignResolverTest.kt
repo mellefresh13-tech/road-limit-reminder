@@ -51,4 +51,19 @@ class TrafficSignResolverTest {
         val fix = LocationFix(53.9006, 27.55001, 5f, 0f, 8f)
         assertNull(TrafficSignResolver.resolve(road, fix, listOf(sign), listOf(road, parallel), RoadDirection.FORWARD))
     }
+    @Test
+    fun doesNotOverrideConflictingOrConditionalWayLimits() {
+        val conflictRoad = road.copy(tags = mapOf("highway" to "residential", "maxspeed" to "60"))
+        val conditionalRoad = road.copy(tags = mapOf(
+            "highway" to "residential", "maxspeed:conditional" to "30 @ wet"
+        ))
+        val fix = LocationFix(53.9006, 27.55001, 5f, 0f, 8f)
+        assertNull(TrafficSignResolver.resolve(
+            conflictRoad, fix, listOf(sign), listOf(conflictRoad), RoadDirection.FORWARD
+        ))
+        assertNull(TrafficSignResolver.resolve(
+            conditionalRoad, fix, listOf(sign), listOf(conditionalRoad), RoadDirection.FORWARD
+        ))
+    }
+
 }

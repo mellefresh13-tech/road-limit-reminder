@@ -18,6 +18,10 @@ object TrafficSignResolver {
         direction: RoadDirection
     ): SpeedLimit.Known? {
         if (direction == RoadDirection.UNKNOWN) return null
+        if (road.tags.containsKey("maxspeed:conditional") ||
+            road.tags["maxspeed:variable"]?.equals("no", ignoreCase = true) == false ||
+            road.tags.keys.any { it.startsWith("maxspeed:lanes") }
+        ) return null
         val current = project(GeoPoint(fix.latitude, fix.longitude), road.geometry) ?: return null
         if (current.distanceMetres > 30.0) return null
 
@@ -38,6 +42,15 @@ object TrafficSignResolver {
             if (signDirection != direction) return@mapNotNull null
             val raw = sign.tags["maxspeed"] ?: sign.tags["maxspeed:motorcar"] ?: return@mapNotNull null
             val parsed = OsmMaxspeedParser.parse(raw) as? SpeedLimit.Known ?: return@mapNotNull null
+            val segmentRaw = when (direction) {
+                RoadDirection.FORWARD -> road.tags["maxspeed:forward"]
+                RoadDirection.BACKWARD -> road.tags["maxspeed:backward"]
+                RoadDirection.UNKNOWN -> null
+            } ?: road.tags["maxspeed:motorcar"] ?: road.tags["maxspeed:motor_vehicle"] ?: road.tags["maxspeed"]
+            if (segmentRaw != null) {
+                val segmentLimit = OsmMaxspeedParser.parse(segmentRaw) as? SpeedLimit.Known ?: return@mapNotNull null
+                if (segmentLimit.value != parsed.value || segmentLimit.unit != parsed.unit) return@mapNotNull null
+            }
             val signProjection = project(sign.point, road.geometry) ?: return@mapNotNull null
             if (signProjection.distanceMetres > 15.0) return@mapNotNull null
             val nearestRoads = allRoads.mapNotNull { candidate ->
