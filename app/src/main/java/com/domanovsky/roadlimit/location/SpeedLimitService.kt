@@ -1,11 +1,7 @@
 package com.domanovsky.roadlimit.location
 
 import android.Manifest
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.app.Service
+import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -15,6 +11,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.location.Geocoder
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -25,54 +22,46 @@ import android.os.Looper
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.IconCompat
-import com.domanovsky.roadlimit.BuildConfig
 import com.domanovsky.roadlimit.MainActivity
-import com.domanovsky.roadlimit.data.TwoGisEdge
-import com.domanovsky.roadlimit.data.TwoGisEdgeMatcher
-import com.domanovsky.roadlimit.data.TwoGisGpsPoint
-import com.domanovsky.roadlimit.data.TwoGisMapMatchingClient
-import com.domanovsky.roadlimit.data.TwoGisMatchResult
-import com.domanovsky.roadlimit.domain.LocationFix
+import com.domanovsky.roadlimit.data.OpenSpeedDatabaseManager
+import com.domanovsky.roadlimit.data.SpeedDatabaseLookup
 import com.domanovsky.roadlimit.domain.SpeedLimit
 import com.domanovsky.roadlimit.domain.SpeedUnit
-import java.net.ConnectException
-import java.net.SocketTimeoutException
-import java.net.UnknownHostException
-import java.util.ArrayDeque
+import java.util.Locale
 import java.util.concurrent.Executors
-import kotlin.math.min
+import kotlin.math.roundToInt
 
 class SpeedLimitService : Service(), LocationListener {
     private lateinit var locationManager: LocationManager
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private val networkExecutor = Executors.newSingleThreadExecutor()
-    private val gpsSamples = ArrayDeque<Location>()
+    private lateinit var databases: OpenSpeedDatabaseManager
+    private val main = Handler(Looper.getMainLooper())
+    private val worker = Executors.newSingleThreadExecutor()
+    private val lookup = Executors.newSingleThreadExecutor()
 
-    // 2GIS response geometry is kept only in memory during the active tracking session.
-    private var matchedEdges: List<TwoGisEdge> = emptyList()
-    private var lastFix: Location? = null
-    private var latestLimit: SpeedLimit? = null
-    private var latestLimitStatus: String? = null
-    private var latestLimitDetail: String? = null
-    private var requestInFlight = false
-    private var trackingActive = false
-    private var nextRetryAt = 0L
-    private var consecutiveFailures = 0
+    @Volatile private var lastFix: Location? = null
+    private var active = false
+    private var country: String? = null
+    private var dbReady = false
+    private var dbUpdating = false
+    private var countryLookup = false
+    private var roadLookup = false
+    private var lastCountryCheck = 0L
+    private var lastCountryLocation: Location? = null
 
-    private val staleFixChecker = object : Runnable {
+    private val staleCheck = object : Runnable {
         override fun run() {
             val fix = lastFix
-            if (fix != null && !isFresh(fix)) {
-                clearMatchedRoadData()
+            if (active && fix != null && !isFresh(fix)) {
                 publish("Сигнал GPS потерян — ограничение скрыто", null, null, null)
             }
-            mainHandler.postDelayed(this, STALE_FIX_CHECK_INTERVAL_MILLIS)
+            main.postDelayed(this, 5_000L)
         }
     }
 
     override fun onCreate() {
         super.onCreate()
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        databases = OpenSpeedDatabaseManager(this)
         createNotificationChannel()
     }
 
@@ -82,311 +71,235 @@ class SpeedLimitService : Service(), LocationListener {
             stopSelf()
             return START_NOT_STICKY
         }
-        startAsForeground()
+        val notification = buildNotification("Road Limit Reminder", "Ожидание GPS", null)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        } else startForeground(NOTIFICATION_ID, notification)
         startTracking()
         return START_NOT_STICKY
     }
 
-    private fun startAsForeground() {
-        val notification = buildNotification("Road Limit Reminder", "Ожидание GPS", null)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-    }
-
     private fun startTracking() {
-        if (trackingActive) return
-        val fineGranted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!fineGranted) {
+        if (active) return
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             publish("Требуется точная геолокация", null, null, null)
             stopSelf()
             return
         }
-        trackingActive = true
+        active = true
         try {
-            locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                GPS_INTERVAL_MILLIS,
-                0f,
-                this,
-                Looper.getMainLooper()
-            )
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, this, Looper.getMainLooper())
             getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, true).apply()
-            mainHandler.removeCallbacks(staleFixChecker)
-            mainHandler.postDelayed(staleFixChecker, STALE_FIX_CHECK_INTERVAL_MILLIS)
-            publish("Ожидание GPS. Подключение к 2ГИС…", null, null, null)
-        } catch (error: SecurityException) {
+            main.removeCallbacks(staleCheck)
+            main.postDelayed(staleCheck, 5_000L)
+            val cached = runCatching { locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER) }.getOrNull()
+            if (cached != null && isFresh(cached)) onLocationChanged(cached)
+            else publish("Ожидание точного сигнала GPS…", null, null, null)
+        } catch (_: SecurityException) {
+            active = false
             publish("Нет разрешения на геолокацию", null, null, null)
             stopSelf()
-        } catch (error: IllegalArgumentException) {
+        } catch (_: IllegalArgumentException) {
+            active = false
             publish("GPS недоступен на устройстве", null, null, null)
             stopSelf()
         }
     }
 
     override fun onLocationChanged(location: Location) {
-        lastFix = location
+        lastFix = Location(location)
         if (!isFresh(location)) {
-            clearMatchedRoadData()
             publish("Сигнал GPS устарел — ограничение скрыто", null, currentSpeed(location), null)
             return
         }
-
-        appendGpsSample(location)
-
-        if (BuildConfig.DGIS_API_KEY.isBlank()) {
-            if (!updateFromMatchedEdges(location)) {
-                publish(
-                    "Не настроен ключ API 2ГИС. Добавьте секрет DGIS_API_KEY в GitHub Actions.",
-                    null,
-                    currentSpeed(location),
-                    "Для получения ограничений нужен активный ключ Map Matching API"
-                )
-            }
+        if (country == null || shouldCheckCountry(location)) {
+            resolveCountry(location)
+            if (country == null) publish("Определяем страну по GPS…", null, currentSpeed(location), null)
             return
         }
+        if (!dbReady) {
+            publish(
+                if (dbUpdating) "Загружаем открытую базу дорог…" else "Локальная база дорог недоступна",
+                null, currentSpeed(location), country
+            )
+            return
+        }
+        runLocalLookup()
+    }
 
-        // Re-use the current 2GIS route in memory. No API request is sent while
-        // the latest GPS fix still belongs to one of its road edges.
-        if (updateFromMatchedEdges(location)) return
+    private fun shouldCheckCountry(location: Location): Boolean {
+        if (System.currentTimeMillis() - lastCountryCheck < 10 * 60 * 1000L) return false
+        val previous = lastCountryLocation ?: return true
+        return previous.distanceTo(location) >= 10_000f
+    }
 
-        clearDisplayedLimit()
-        requestMapMatching()
-        if (!requestInFlight) {
-            val status = if (System.currentTimeMillis() < nextRetryAt) {
-                "Ожидаем повторного запроса 2ГИС…"
-            } else {
-                "Определяем дорожный участок через 2ГИС…"
+    private fun resolveCountry(location: Location) {
+        if (countryLookup || System.currentTimeMillis() - lastCountryCheck < COUNTRY_RETRY_MILLIS && country == null) return
+        countryLookup = true
+        lastCountryCheck = System.currentTimeMillis()
+        lastCountryLocation = Location(location)
+        worker.execute {
+            val detected = detectCountry(location)
+            main.post {
+                countryLookup = false
+                if (!active) return@post
+                if (detected.isNullOrBlank()) {
+                    if (country == null) publish(
+                        "Не удалось определить страну",
+                        null, lastFix?.let { currentSpeed(it) },
+                        "Нужен GPS и системный геокодер Android"
+                    )
+                    return@post
+                }
+                if (detected != country) {
+                    country = detected
+                    dbReady = databases.openCached(detected)
+                    prepareDatabase(detected)
+                } else if (dbReady) runLocalLookup()
             }
-            publish(status, null, currentSpeed(location), "GPS ±${location.accuracy.toInt()} м")
         }
     }
 
-    private fun appendGpsSample(location: Location) {
-        if (!location.accuracy.isFinite() || location.accuracy > MAX_API_ACCURACY_METRES) return
-        val previous = gpsSamples.peekLast()
-        if (previous != null) {
-            val gap = location.time - previous.time
-            if (gap < MIN_SAMPLE_GAP_MILLIS) return
-            if (gap > MAX_SAMPLE_GAP_MILLIS) {
-                gpsSamples.clear()
-                clearMatchedRoadData()
-            }
-        }
-        gpsSamples.addLast(Location(location))
-        while (gpsSamples.size > MAX_QUERY_POINTS) gpsSamples.removeFirst()
+    @Suppress("DEPRECATION")
+    private fun detectCountry(location: Location): String? {
+        if (!Geocoder.isPresent()) return null
+        return runCatching {
+            Geocoder(this, Locale.getDefault()).getFromLocation(location.latitude, location.longitude, 1)
+                ?.firstOrNull()?.countryCode?.uppercase(Locale.ROOT)
+        }.getOrNull()
     }
 
-    private fun requestMapMatching() {
-        if (requestInFlight || System.currentTimeMillis() < nextRetryAt) return
-        if (gpsSamples.size < MIN_QUERY_POINTS) return
+    private fun prepareDatabase(code: String) {
+        if (dbUpdating) return
+        dbReady = databases.openCached(code)
+        if (dbReady) runLocalLookup()
+        else publish("Загружаем базу ограничений $code…", null, lastFix?.let { currentSpeed(it) }, "OpenStreetMap")
 
-        val samples = gpsSamples.toList().takeLast(MAX_QUERY_POINTS)
-        val newestFix = lastFix ?: return
-        val newestSample = samples.lastOrNull() ?: return
-        if (newestFix.accuracy > MAX_API_ACCURACY_METRES ||
-            newestFix.time - newestSample.time > MAX_SAMPLE_AGE_FOR_REQUEST_MILLIS
-        ) return
-
-        val queryPoints = samples.map { it.toTwoGisPoint() }
-        requestInFlight = true
-
-        networkExecutor.execute {
-            try {
-                val result = TwoGisMapMatchingClient(BuildConfig.DGIS_API_KEY).match(queryPoints)
-                mainHandler.post {
-                    requestInFlight = false
-                    if (!trackingActive) return@post
-                    matchedEdges = result.edges
-
-                    val fix = lastFix
-                    val matched = fix?.takeIf(::isFresh)?.let { matchCurrentFix(it, result) }
-                    if (fix != null && matched != null) {
-                        consecutiveFailures = 0
-                        nextRetryAt = System.currentTimeMillis() + SUCCESSFUL_REQUEST_COOLDOWN_MILLIS
-                        publishMatched(matched, fix)
+        if (!dbReady || databases.shouldRefresh(code)) {
+            dbUpdating = true
+            worker.execute {
+                val update = databases.downloadAndInstall(code)
+                val ready = databases.openCached(code)
+                main.post {
+                    dbUpdating = false
+                    if (!active || country != code) return@post
+                    dbReady = ready
+                    if (ready) {
+                        publish(
+                            if (update.updated) "База OpenStreetMap обновлена" else "Используется сохранённая база OpenStreetMap",
+                            null, lastFix?.let { currentSpeed(it) }, "$code • локальная база готова"
+                        )
+                        runLocalLookup()
                     } else {
-                        val backoff = scheduleRetry()
-                        clearDisplayedLimit()
-                        publish(
-                            "2ГИС получил GPS-трек, но текущая дорога пока не подтверждена",
-                            null,
-                            fix?.let(::currentSpeed),
-                            "Повтор через ${backoff / 1000} с • Участков: ${result.edges.size}"
-                        )
-                    }
-                }
-            } catch (error: Exception) {
-                mainHandler.post {
-                    requestInFlight = false
-                    if (!trackingActive) return@post
-                    val backoff = scheduleRetry()
-                    val fix = lastFix
-                    if (fix == null || !isFresh(fix) || !updateFromMatchedEdges(fix)) {
-                        publish(
-                            mapMatchingError(error),
-                            null,
-                            fix?.let(::currentSpeed),
-                            "Повтор через ${backoff / 1000} с"
-                        )
+                        publish("Не удалось загрузить базу ограничений", null, lastFix?.let { currentSpeed(it) }, update.message)
                     }
                 }
             }
         }
     }
 
-    private fun matchCurrentFix(
-        location: Location,
-        result: TwoGisMatchResult? = null
-    ): com.domanovsky.roadlimit.data.TwoGisEdgeMatch? {
-        val edges = result?.edges ?: matchedEdges
-        if (edges.isEmpty()) return null
-        val fix = location.toFix()
-        return TwoGisEdgeMatcher.match(fix, edges)
-    }
-
-    private fun updateFromMatchedEdges(location: Location): Boolean {
-        if (!isFresh(location) || matchedEdges.isEmpty()) return false
-        val match = matchCurrentFix(location) ?: return false
-        consecutiveFailures = 0
-        nextRetryAt = 0L
-        publishMatched(match, location)
-        return true
-    }
-
-    private fun publishMatched(
-        match: com.domanovsky.roadlimit.data.TwoGisEdgeMatch,
-        location: Location
-    ) {
-        latestLimit = match.speedLimit
-        latestLimitStatus = if (latestLimit != null) {
-            "Ограничение по данным 2ГИС"
-        } else {
-            "2ГИС определил дорогу, но ограничение не указано"
+    private fun runLocalLookup() {
+        if (!active || !dbReady || roadLookup) return
+        val fix = lastFix?.let(::Location) ?: return
+        val code = country ?: return
+        roadLookup = true
+        lookup.execute {
+            val result = databases.lookup(
+                countryCode = code,
+                latitude = fix.latitude,
+                longitude = fix.longitude,
+                accuracyMetres = fix.accuracy,
+                bearingDegrees = if (fix.hasBearing()) fix.bearing else Float.NaN,
+                speedMetresPerSecond = if (fix.hasSpeed()) fix.speed else 0f
+            )
+            main.post {
+                roadLookup = false
+                if (!active || country != code) return@post
+                val newest = lastFix
+                if (newest == null || !isFresh(newest)) {
+                    publish("Сигнал GPS потерян — ограничение скрыто", null, null, null)
+                    return@post
+                }
+                if (newest.time != fix.time) {
+                    runLocalLookup()
+                    return@post
+                }
+                when (result) {
+                    is SpeedDatabaseLookup.Found -> {
+                        val unit = if (result.match.isMph) SpeedUnit.MILES_PER_HOUR else SpeedUnit.KILOMETRES_PER_HOUR
+                        val limit = SpeedLimit(
+                            result.match.speedKmhOrMph,
+                            unit,
+                            "OpenStreetMap • ${result.match.roadRecordId}"
+                        )
+                        publish(
+                            "Ограничение по данным OpenStreetMap",
+                            limit, currentSpeed(newest),
+                            "Сопоставление по геометрии • GPS ±${newest.accuracy.toInt()} м"
+                        )
+                    }
+                    is SpeedDatabaseLookup.NoLimit -> publish(
+                        "Для этой дороги в OSM не указано ограничение",
+                        null, currentSpeed(newest),
+                        result.nearestDistanceMetres?.let { "Ближайший сегмент: ${it.toInt()} м" }
+                    )
+                    SpeedDatabaseLookup.Ambiguous -> publish(
+                        "Рядом несколько дорог с разными ограничениями", null,
+                        currentSpeed(newest), "Ограничение скрыто до уверенного сопоставления"
+                    )
+                    SpeedDatabaseLookup.DatabaseUnavailable -> publish(
+                        "Локальная база ограничений недоступна", null,
+                        currentSpeed(newest), "Страна: $code"
+                    )
+                }
+            }
         }
-        latestLimitDetail = "Сегмент 2ГИС ${match.edge.id}"
-        publish(latestLimitStatus!!, latestLimit, currentSpeed(location), latestLimitDetail)
     }
 
-    private fun clearDisplayedLimit() {
-        latestLimit = null
-        latestLimitStatus = null
-        latestLimitDetail = null
+    private fun currentSpeed(location: Location): Float? {
+        if (!location.hasSpeed() || !location.speed.isFinite()) return null
+        return if (country in MPH_COUNTRIES) location.speed * 2.23694f else location.speed * 3.6f
     }
-
-    private fun clearMatchedRoadData() {
-        matchedEdges = emptyList()
-        clearDisplayedLimit()
-        gpsSamples.clear()
-    }
-
-    private fun Location.toFix() = LocationFix(
-        latitude = latitude,
-        longitude = longitude,
-        accuracyMetres = accuracy,
-        bearingDegrees = if (hasBearing()) bearing else Float.NaN,
-        speedMetresPerSecond = if (hasSpeed()) speed else 0f
-    )
-
-    private fun Location.toTwoGisPoint() = TwoGisGpsPoint(
-        latitude = latitude,
-        longitude = longitude,
-        utcSeconds = time / 1000L,
-        speedKmh = if (hasSpeed()) speed * 3.6 else null,
-        azimuthDegrees = if (hasBearing()) bearing.toDouble() else null
-    )
-
-    private fun currentSpeed(location: Location): Float? =
-        location.speed.takeIf { location.hasSpeed() && it.isFinite() }
 
     private fun isFresh(location: Location): Boolean =
         SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos <= GPS_MAX_AGE_NANOS
 
-    private fun scheduleRetry(): Long {
-        consecutiveFailures++
-        val backoff = min(
-            MAX_RETRY_DELAY_MILLIS,
-            INITIAL_RETRY_DELAY_MILLIS * (1L shl min(consecutiveFailures - 1, MAX_BACKOFF_EXPONENT))
-        )
-        nextRetryAt = System.currentTimeMillis() + backoff
-        return backoff
-    }
-
-    private fun mapMatchingError(error: Exception): String {
-        val cause = generateSequence<Throwable>(error) { it.cause }
-            .firstOrNull {
-                it is SocketTimeoutException || it is UnknownHostException ||
-                    it is ConnectException || (it.message?.contains("2ГИС HTTP") == true)
-            }
-        val message = cause?.message.orEmpty()
-        return when {
-            cause is SocketTimeoutException -> "2ГИС не ответил вовремя — ограничение временно недоступно"
-            cause is UnknownHostException -> "Не удалось найти сервер 2ГИС"
-            cause is ConnectException -> "Не удалось подключиться к 2ГИС"
-            message.contains("HTTP 401") || message.contains("HTTP 403") ->
-                "2ГИС отклонил API-ключ. Проверьте DGIS_API_KEY и доступ к Map Matching"
-            message.contains("HTTP 429") ->
-                "2ГИС ограничил частоту запросов. Повторим позже"
-            message.contains("HTTP 502") || message.contains("HTTP 503") || message.contains("HTTP 504") ->
-                "Сервис 2ГИС временно перегружен"
-            else -> cause?.message ?: "Не удалось получить ограничение от 2ГИС"
-        }
-    }
-
     private fun publish(status: String, limit: SpeedLimit?, speed: Float?, detail: String?) {
-        val speedText = speed?.takeIf { it.isFinite() }?.let {
-            if (limit?.unit == SpeedUnit.MILES_PER_HOUR) {
-                "${(it * 2.23694f).toInt()} mph"
-            } else {
-                "${(it * 3.6f).toInt()} км/ч"
-            }
-        } ?: "—"
-        val stateIntent = Intent(ACTION_STATE).setPackage(packageName).apply {
+        val unit = limit?.unit ?: if (country in MPH_COUNTRIES) SpeedUnit.MILES_PER_HOUR else SpeedUnit.KILOMETRES_PER_HOUR
+        val speedText = speed?.takeIf { it.isFinite() }?.let { "${it.roundToInt()} ${unit.label}" } ?: "—"
+        sendBroadcast(Intent(ACTION_STATE).setPackage(packageName).apply {
             putExtra(EXTRA_LIMIT, limit?.value?.toString() ?: "—")
             putExtra(EXTRA_UNIT, limit?.unit?.label.orEmpty())
             putExtra(EXTRA_STATUS, status)
             putExtra(EXTRA_SPEED, speedText)
             putExtra(EXTRA_DETAIL, detail.orEmpty())
             putExtra(EXTRA_KNOWN, limit != null)
-        }
-        sendBroadcast(stateIntent)
-
+        })
         val title = limit?.let { "${it.value} ${it.unit.label}" } ?: "Road Limit Reminder"
-        val body = if (limit != null) listOf(status, detail.orEmpty()).filter { it.isNotBlank() }.joinToString(" • ") else status
-        getSystemService(NotificationManager::class.java).notify(
-            NOTIFICATION_ID,
-            buildNotification(title, body, limit)
-        )
+        val text = if (limit != null) listOf(status, detail.orEmpty()).filter { it.isNotBlank() }.joinToString(" • ") else status
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(title, text, limit))
     }
 
     private fun buildNotification(title: String, text: String, limit: SpeedLimit?): Notification {
-        val openIntent = PendingIntent.getActivity(
+        val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val stopIntent = PendingIntent.getService(
+        val stop = PendingIntent.getService(
             this, 1, Intent(this, SpeedLimitService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(notificationIcon(limit))
-            .setContentTitle(title)
-            .setContentText(text)
-            .setContentIntent(openIntent)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .addAction(android.R.drawable.ic_media_pause, "Остановить", stopIntent)
+            .setContentTitle(title).setContentText(text)
+            .setContentIntent(open).setOngoing(true).setOnlyAlertOnce(true)
+            .addAction(android.R.drawable.ic_media_pause, "Остановить", stop)
             .build()
     }
 
     private fun notificationIcon(limit: SpeedLimit?): IconCompat {
-        if (limit == null) {
-            return IconCompat.createWithResource(this, android.R.drawable.ic_menu_mylocation)
-        }
-        val size = 96
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        if (limit == null) return IconCompat.createWithResource(this, android.R.drawable.ic_menu_mylocation)
+        val bitmap = Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
@@ -404,31 +317,24 @@ class SpeedLimitService : Service(), LocationListener {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Отслеживание ограничения скорости",
-                NotificationManager.IMPORTANCE_LOW
+            getSystemService(NotificationManager::class.java).createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, "Отслеживание ограничения скорости", NotificationManager.IMPORTANCE_LOW)
             )
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
     private fun stopTracking() {
-        trackingActive = false
-        mainHandler.removeCallbacks(staleFixChecker)
-        try {
-            locationManager.removeUpdates(this)
-        } catch (_: SecurityException) {
-        }
-        clearMatchedRoadData()
-        requestInFlight = false
+        active = false
+        main.removeCallbacks(staleCheck)
+        runCatching { locationManager.removeUpdates(this) }
+        databases.close()
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, false).apply()
-        networkExecutor.shutdownNow()
+        lookup.shutdownNow()
+        worker.shutdownNow()
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     override fun onProviderDisabled(provider: String) {
-        clearMatchedRoadData()
         publish("GPS отключён", null, null, null)
     }
 
@@ -442,15 +348,13 @@ class SpeedLimitService : Service(), LocationListener {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        trackingActive = false
-        mainHandler.removeCallbacks(staleFixChecker)
-        try {
-            locationManager.removeUpdates(this)
-        } catch (_: Exception) {
-        }
-        clearMatchedRoadData()
+        active = false
+        main.removeCallbacks(staleCheck)
+        runCatching { locationManager.removeUpdates(this) }
+        databases.close()
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, false).apply()
-        networkExecutor.shutdownNow()
+        lookup.shutdownNow()
+        worker.shutdownNow()
         super.onDestroy()
     }
 
@@ -467,18 +371,8 @@ class SpeedLimitService : Service(), LocationListener {
         const val KEY_RUNNING = "running"
         private const val CHANNEL_ID = "speed_limit_tracking"
         private const val NOTIFICATION_ID = 71
-        private const val GPS_INTERVAL_MILLIS = 1_000L
         private const val GPS_MAX_AGE_NANOS = 15_000_000_000L
-        private const val STALE_FIX_CHECK_INTERVAL_MILLIS = 5_000L
-        private const val MAX_API_ACCURACY_METRES = 80f
-        private const val MIN_SAMPLE_GAP_MILLIS = 1_000L
-        private const val MAX_SAMPLE_GAP_MILLIS = 10_000L
-        private const val MAX_SAMPLE_AGE_FOR_REQUEST_MILLIS = 2_000L
-        private const val MIN_QUERY_POINTS = 2
-        private const val MAX_QUERY_POINTS = 10
-        private const val SUCCESSFUL_REQUEST_COOLDOWN_MILLIS = 2_000L
-        private const val INITIAL_RETRY_DELAY_MILLIS = 5_000L
-        private const val MAX_RETRY_DELAY_MILLIS = 60_000L
-        private const val MAX_BACKOFF_EXPONENT = 4
+        private const val COUNTRY_RETRY_MILLIS = 30_000L
+        private val MPH_COUNTRIES = setOf("GB", "US", "LR", "MM")
     }
 }
