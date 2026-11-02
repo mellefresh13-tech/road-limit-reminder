@@ -93,7 +93,7 @@ class TwoGisMapMatchingClient(private val apiKey: String) {
 
     companion object {
         private const val ENDPOINT = "https://routing.api.2gis.com/map_matching/1.0.0"
-        private const val SEARCH_RADIUS_METRES = 100
+        private const val SEARCH_RADIUS_METRES = 40
         private const val CONNECT_TIMEOUT_MILLIS = 7_000
         private const val READ_TIMEOUT_MILLIS = 12_000
     }
