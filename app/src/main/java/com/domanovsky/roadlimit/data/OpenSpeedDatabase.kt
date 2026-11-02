@@ -51,6 +51,11 @@ class OpenSpeedDatabaseManager(context: Context) {
         val code = countryCode.lowercase(Locale.ROOT)
         if (activeCountry == code && activeDatabase?.isOpen == true) return true
 
+        if (activeCountry != code) {
+            activeDatabase?.close()
+            activeDatabase = null
+            activeCountry = null
+        }
         val file = databaseFile(code)
         if (!file.isFile || file.length() < MIN_SQLITE_SIZE) return false
 
@@ -297,11 +302,10 @@ class OpenSpeedDatabaseManager(context: Context) {
             if (code !in 200..299) return null
             val body = connection.inputStream.bufferedReader().use { it.readText() }
             val releases = JSONArray(body)
-            val europeReleases = (0 until releases.length()).mapNotNull { releases.optJSONObject(it) }
-                .filter { it.optString("tag_name").startsWith("europe-") }
+            val regionalReleases = (0 until releases.length()).mapNotNull { releases.optJSONObject(it) }
                 .sortedByDescending { it.optString("published_at") }
 
-            for (release in europeReleases) {
+            for (release in regionalReleases) {
                 val assets = release.optJSONArray("assets") ?: continue
                 for (index in 0 until assets.length()) {
                     val asset = assets.optJSONObject(index) ?: continue
@@ -433,7 +437,7 @@ class OpenSpeedDatabaseManager(context: Context) {
         private const val LATEST_EUROPE_RELEASE =
             "https://github.com/hvdwolf/SpeedAlert_Databases/releases/latest/download"
         private const val RELEASES_API =
-            "https://api.github.com/repos/hvdwolf/SpeedAlert_Databases/releases?per_page=20"
+            "https://api.github.com/repos/hvdwolf/SpeedAlert_Databases/releases?per_page=100"
         private const val USER_AGENT = "RoadLimitReminder/0.5 (Android; com.domanovsky.roadlimit)"
         private const val CONNECT_TIMEOUT_MILLIS = 10_000
         private const val METADATA_TIMEOUT_MILLIS = 20_000
