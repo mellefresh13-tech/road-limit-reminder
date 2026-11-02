@@ -38,6 +38,9 @@ import com.domanovsky.roadlimit.domain.RoadSegment
 import com.domanovsky.roadlimit.domain.SpeedLimit
 import com.domanovsky.roadlimit.domain.SpeedUnit
 import com.domanovsky.roadlimit.domain.TrafficSignResolver
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.concurrent.Executors
 
 class SpeedLimitService : Service(), LocationListener {
@@ -221,6 +224,20 @@ class SpeedLimitService : Service(), LocationListener {
                 }
             }
         }
+    }
+
+    private fun loadErrorStatus(error: Exception): String {
+        val cause = generateSequence<Throwable>(error) { it.cause }
+            .firstOrNull { it is SocketTimeoutException || it is UnknownHostException ||
+                it is ConnectException || (it.message?.startsWith("Overpass HTTP ") == true) }
+
+        val reason = when (cause) {
+            is SocketTimeoutException -> "сервер OSM не ответил вовремя"
+            is UnknownHostException -> "не удалось найти сервер OSM"
+            is ConnectException -> "не удалось подключиться к серверу OSM"
+            else -> cause?.message?.removePrefix("Overpass ") ?: "оба сервера OSM недоступны"
+        }
+        return "Ошибка загрузки OSM: $reason. Повторная попытка через 10 мин."
     }
 
     private fun isFresh(location: Location): Boolean =
