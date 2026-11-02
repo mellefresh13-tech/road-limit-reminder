@@ -33,7 +33,7 @@ object TwoGisEdgeMatcher {
             fix.accuracyMetres > 80f
         ) return null
 
-        val maxDistance = max(18.0, min(55.0, fix.accuracyMetres * 1.5))
+        val maxDistance = max(12.0, min(30.0, fix.accuracyMetres * 1.5))
         val hasHeading = fix.speedMetresPerSecond >= 3f && fix.bearingDegrees.isFinite()
         val candidates = edges.mapNotNull { edge ->
             if (edge.id <= 0L || edge.geometry.size < 2) return@mapNotNull null
