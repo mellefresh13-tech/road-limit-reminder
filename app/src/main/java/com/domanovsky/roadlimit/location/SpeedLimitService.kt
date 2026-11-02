@@ -48,7 +48,7 @@ class SpeedLimitService : Service(), LocationListener {
     private val gpsSamples = ArrayDeque<Location>()
 
     private var lastFix: Location? = null
-    private var latestLimit: SpeedLimit.Known? = null
+    private var latestLimit: SpeedLimit? = null
     private var latestLimitStatus: String? = null
     private var latestLimitDetail: String? = null
     private var latestMatchedLocation: Location? = null
@@ -328,7 +328,7 @@ class SpeedLimitService : Service(), LocationListener {
         }
     }
 
-    private fun publish(status: String, limit: SpeedLimit.Known?, speed: Float?, detail: String?) {
+    private fun publish(status: String, limit: SpeedLimit?, speed: Float?, detail: String?) {
         val speedText = speed?.takeIf { it.isFinite() }?.let {
             if (limit?.unit == SpeedUnit.MILES_PER_HOUR) {
                 "${(it * 2.23694f).toInt()} mph"
