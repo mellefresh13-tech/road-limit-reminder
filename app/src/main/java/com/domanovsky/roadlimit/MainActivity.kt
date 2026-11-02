@@ -28,7 +28,11 @@ class MainActivity : Activity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != SpeedLimitService.ACTION_STATE) return
             limitValue.text = intent.getStringExtra(SpeedLimitService.EXTRA_LIMIT) ?: "—"
-            limitUnit.text = intent.getStringExtra(SpeedLimitService.EXTRA_UNIT).orEmpty()
+            limitUnit.text = when (intent.getStringExtra(SpeedLimitService.EXTRA_UNIT)) {
+                "км/ч" -> "км\n―\nч"
+                "mph" -> "mi\n―\nh"
+                else -> ""
+            }
             status.text = intent.getStringExtra(SpeedLimitService.EXTRA_STATUS) ?: "Ожидание"
             currentSpeed.text = "Текущая скорость: ${intent.getStringExtra(SpeedLimitService.EXTRA_SPEED) ?: "—"}"
             detail.text = intent.getStringExtra(SpeedLimitService.EXTRA_DETAIL).orEmpty()
@@ -65,9 +69,10 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
         }
         limitUnit = TextView(this).apply {
-            textSize = 22f
+            textSize = 16f
             setTextColor(0xFFFFFFFF.toInt())
             gravity = Gravity.CENTER
+            setLineSpacing(0f, 0.75f)
         }
         status = TextView(this).apply {
             text = "Запустите отслеживание"
