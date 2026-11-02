@@ -27,6 +27,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.IconCompat
 import com.domanovsky.roadlimit.BuildConfig
 import com.domanovsky.roadlimit.MainActivity
+import com.domanovsky.roadlimit.data.TwoGisEdge
 import com.domanovsky.roadlimit.data.TwoGisEdgeMatcher
 import com.domanovsky.roadlimit.data.TwoGisGpsPoint
 import com.domanovsky.roadlimit.data.TwoGisMapMatchingClient
@@ -47,14 +48,14 @@ class SpeedLimitService : Service(), LocationListener {
     private val networkExecutor = Executors.newSingleThreadExecutor()
     private val gpsSamples = ArrayDeque<Location>()
 
+    // 2GIS response geometry is kept only in memory during the active tracking session.
+    private var matchedEdges: List<TwoGisEdge> = emptyList()
+    private var currentEdgeId: Long? = null
     private var lastFix: Location? = null
     private var latestLimit: SpeedLimit? = null
     private var latestLimitStatus: String? = null
     private var latestLimitDetail: String? = null
-    private var latestMatchedLocation: Location? = null
-    private var latestMatchAtMillis = 0L
     private var requestInFlight = false
-    private var hasSuccessfulMatch = false
     private var nextRetryAt = 0L
     private var consecutiveFailures = 0
 
@@ -62,10 +63,10 @@ class SpeedLimitService : Service(), LocationListener {
         override fun run() {
             val fix = lastFix
             if (fix != null && !isFresh(fix)) {
-                clearDisplayedLimit()
+                clearMatchedRoadData()
                 publish("Сигнал GPS потерян — ограничение скрыто", null, null, null)
             }
-            mainHandler.postDelayed(this, 5_000L)
+            mainHandler.postDelayed(this, STALE_FIX_CHECK_INTERVAL_MILLIS)
         }
     }
 
@@ -112,7 +113,7 @@ class SpeedLimitService : Service(), LocationListener {
             )
             getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, true).apply()
             mainHandler.removeCallbacks(staleFixChecker)
-            mainHandler.postDelayed(staleFixChecker, 5_000L)
+            mainHandler.postDelayed(staleFixChecker, STALE_FIX_CHECK_INTERVAL_MILLIS)
             publish("Ожидание GPS. Подключение к 2ГИС…", null, null, null)
         } catch (error: SecurityException) {
             publish("Нет разрешения на геолокацию", null, null, null)
@@ -126,38 +127,38 @@ class SpeedLimitService : Service(), LocationListener {
     override fun onLocationChanged(location: Location) {
         lastFix = location
         if (!isFresh(location)) {
-            clearDisplayedLimit()
-            publish("Сигнал GPS устарел — ограничение скрыто", null, location.speed, null)
+            clearMatchedRoadData()
+            publish("Сигнал GPS устарел — ограничение скрыто", null, currentSpeed(location), null)
             return
         }
 
-        expireDisplayedLimit(location)
         appendGpsSample(location)
 
         if (BuildConfig.DGIS_API_KEY.isBlank()) {
-            if (latestLimit == null) {
+            if (!updateFromMatchedEdges(location)) {
                 publish(
                     "Не настроен ключ API 2ГИС. Добавьте секрет DGIS_API_KEY в GitHub Actions.",
                     null,
-                    location.speed,
+                    currentSpeed(location),
                     "Для получения ограничений нужен активный ключ Map Matching API"
                 )
-            } else {
-                publish(latestLimitStatus ?: "Данные 2ГИС", latestLimit, location.speed, latestLimitDetail)
             }
             return
         }
 
+        // Re-use the current 2GIS route in memory. No API request is sent while
+        // the latest GPS fix still belongs to one of its road edges.
+        if (updateFromMatchedEdges(location)) return
+
+        clearDisplayedLimit()
         requestMapMatching()
-        if (!requestInFlight && latestLimit == null) {
-            publish(
-                if (nextRetryAt > System.currentTimeMillis()) "Ожидаем повторного запроса 2ГИС…" else "Определяем дорожный участок через 2ГИС…",
-                null,
-                location.speed,
-                "GPS ±${location.accuracy.toInt()} м"
-            )
-        } else if (latestLimit != null && latestMatchedLocation != null) {
-            publish(latestLimitStatus ?: "Данные 2ГИС", latestLimit, location.speed, latestLimitDetail)
+        if (!requestInFlight) {
+            val status = if (System.currentTimeMillis() < nextRetryAt) {
+                "Ожидаем повторного запроса 2ГИС…"
+            } else {
+                "Определяем дорожный участок через 2ГИС…"
+            }
+            publish(status, null, currentSpeed(location), "GPS ±${location.accuracy.toInt()} м")
         }
     }
 
@@ -169,7 +170,7 @@ class SpeedLimitService : Service(), LocationListener {
             if (gap < MIN_SAMPLE_GAP_MILLIS) return
             if (gap > MAX_SAMPLE_GAP_MILLIS) {
                 gpsSamples.clear()
-                hasSuccessfulMatch = false
+                clearMatchedRoadData()
             }
         }
         gpsSamples.addLast(Location(location))
@@ -178,14 +179,16 @@ class SpeedLimitService : Service(), LocationListener {
 
     private fun requestMapMatching() {
         if (requestInFlight || System.currentTimeMillis() < nextRetryAt) return
-        val requiredPoints = if (hasSuccessfulMatch) REFRESH_QUERY_POINTS else INITIAL_QUERY_POINTS
-        if (gpsSamples.size < requiredPoints) return
+        if (gpsSamples.size < MIN_QUERY_POINTS) return
 
         val samples = gpsSamples.toList().takeLast(MAX_QUERY_POINTS)
-        if (samples.last().time - samples.first().time > MAX_QUERY_SPAN_MILLIS) {
-            while (gpsSamples.size > 1) gpsSamples.removeFirst()
-            return
-        }
+        val newestFix = lastFix ?: return
+        val newestSample = samples.lastOrNull() ?: return
+        if (newestFix.accuracy > MAX_API_ACCURACY_METRES ||
+            newestFix.time - newestSample.time > MAX_SAMPLE_AGE_FOR_REQUEST_MILLIS
+        ) return
+        if (samples.last().time - samples.first().time > MAX_QUERY_SPAN_MILLIS) return
+
         val queryPoints = samples.map { it.toTwoGisPoint() }
         requestInFlight = true
 
@@ -196,21 +199,22 @@ class SpeedLimitService : Service(), LocationListener {
                     requestInFlight = false
                     consecutiveFailures = 0
                     nextRetryAt = System.currentTimeMillis() + SUCCESSFUL_REQUEST_COOLDOWN_MILLIS
-                    hasSuccessfulMatch = true
+                    matchedEdges = result.edges
+                    currentEdgeId = result.currentEdgeId
 
-                    val latestSubmitted = samples.last()
-                    val newerSamples = gpsSamples.filter { it.time > latestSubmitted.time }
-                    gpsSamples.clear()
-                    gpsSamples.addLast(latestSubmitted)
-                    newerSamples.takeLast(MAX_QUERY_POINTS - 1).forEach(gpsSamples::addLast)
-
-                    val matchedIndex = result.matchedPointIndex
-                    val matchedSample = matchedIndex
-                        ?.takeIf { it in samples.indices }
-                        ?.let(samples::get)
-                        ?: latestSubmitted
-                    applyLiveResult(result, matchedSample)
-                    if (gpsSamples.size >= REFRESH_QUERY_POINTS) requestMapMatching()
+                    val fix = lastFix
+                    val matched = fix?.takeIf(::isFresh)?.let { matchCurrentFix(it, result) }
+                    if (fix != null && matched != null) {
+                        publishMatched(matched, fix)
+                    } else {
+                        clearDisplayedLimit()
+                        publish(
+                            "2ГИС получил GPS-трек, но текущая дорога пока не подтверждена",
+                            null,
+                            fix?.let(::currentSpeed),
+                            "Участков в ответе: ${result.edges.size}"
+                        )
+                    }
                 }
             } catch (error: Exception) {
                 mainHandler.post {
@@ -218,74 +222,73 @@ class SpeedLimitService : Service(), LocationListener {
                     consecutiveFailures++
                     val backoff = min(
                         MAX_RETRY_DELAY_MILLIS,
-                        INITIAL_RETRY_DELAY_MILLIS * (1L shl min(consecutiveFailures - 1, 4))
+                        INITIAL_RETRY_DELAY_MILLIS * (1L shl min(consecutiveFailures - 1, MAX_BACKOFF_EXPONENT))
                     )
                     nextRetryAt = System.currentTimeMillis() + backoff
                     val fix = lastFix
-                    expireDisplayedLimit(fix)
-                    if (latestLimit == null) {
+                    if (fix == null || !isFresh(fix) || !updateFromMatchedEdges(fix)) {
                         publish(
                             mapMatchingError(error),
                             null,
-                            fix?.speed,
+                            fix?.let(::currentSpeed),
                             "Повтор через ${backoff / 1000} с"
                         )
-                    } else if (fix != null) {
-                        publish(latestLimitStatus ?: "Данные 2ГИС", latestLimit, fix.speed, latestLimitDetail)
                     }
                 }
             }
         }
     }
 
-    private fun applyLiveResult(result: TwoGisMatchResult, submittedLocation: Location) {
-        val edge = result.currentEdgeId?.let { id -> result.edges.firstOrNull { it.id == id } }
-        val point = result.matchedPoint
-        val match = if (edge != null && point != null) {
-            val matchedFix = LocationFix(
-                latitude = point.latitude,
-                longitude = point.longitude,
-                accuracyMetres = 5f,
-                bearingDegrees = Float.NaN,
-                speedMetresPerSecond = 0f
-            )
-            TwoGisEdgeMatcher.match(matchedFix, listOf(edge))
-        } else {
-            null
-        }
-
-        latestLimit = match?.speedLimit
-        latestLimitStatus = if (latestLimit != null) "Ограничение по данным 2ГИС" else "2ГИС не вернул лимит для этого участка"
-        latestLimitDetail = edge?.let { "Сегмент 2ГИС ${it.id}" }
-        latestMatchAtMillis = System.currentTimeMillis()
-        latestMatchedLocation = point?.let {
-            Location("2GIS").apply {
-                latitude = it.latitude
-                longitude = it.longitude
-                time = submittedLocation.time
+    private fun matchCurrentFix(
+        location: Location,
+        result: TwoGisMatchResult? = null
+    ): com.domanovsky.roadlimit.data.TwoGisEdgeMatch? {
+        val edges = result?.edges ?: matchedEdges
+        if (edges.isEmpty()) return null
+        val fix = location.toFix()
+        val preferredEdge = result?.currentEdgeId ?: currentEdgeId
+        if (preferredEdge != null) {
+            val preferred = edges.firstOrNull { it.id == preferredEdge }
+            if (preferred != null) {
+                TwoGisEdgeMatcher.match(fix, listOf(preferred))?.let { return it }
             }
         }
-        val speed = lastFix?.takeIf(::isFresh)?.speed ?: submittedLocation.speed
-        publish(latestLimitStatus!!, latestLimit, speed, latestLimitDetail)
+        return TwoGisEdgeMatcher.match(fix, edges)
     }
 
-    private fun expireDisplayedLimit(location: Location?) {
-        if (latestLimit == null) return
-        val matched = latestMatchedLocation
-        val age = System.currentTimeMillis() - latestMatchAtMillis
-        val movedTooFar = location == null || matched == null ||
-            matched.distanceTo(location) > MAX_DISPLAY_DISTANCE_METRES
-        if (age > MAX_DISPLAY_AGE_MILLIS || movedTooFar) {
-            clearDisplayedLimit()
+    private fun updateFromMatchedEdges(location: Location): Boolean {
+        if (!isFresh(location) || matchedEdges.isEmpty()) return false
+        val match = matchCurrentFix(location) ?: return false
+        currentEdgeId = match.edge.id
+        publishMatched(match, location)
+        return true
+    }
+
+    private fun publishMatched(
+        match: com.domanovsky.roadlimit.data.TwoGisEdgeMatch,
+        location: Location
+    ) {
+        latestLimit = match.speedLimit
+        latestLimitStatus = if (latestLimit != null) {
+            "Ограничение по данным 2ГИС"
+        } else {
+            "2ГИС определил дорогу, но ограничение не указано"
         }
+        latestLimitDetail = "Сегмент 2ГИС ${match.edge.id}"
+        publish(latestLimitStatus!!, latestLimit, currentSpeed(location), latestLimitDetail)
     }
 
     private fun clearDisplayedLimit() {
         latestLimit = null
         latestLimitStatus = null
         latestLimitDetail = null
-        latestMatchedLocation = null
-        latestMatchAtMillis = 0L
+    }
+
+    private fun clearMatchedRoadData() {
+        matchedEdges = emptyList()
+        currentEdgeId = null
+        clearDisplayedLimit()
+        gpsSamples.clear()
     }
 
     private fun Location.toFix() = LocationFix(
@@ -303,6 +306,9 @@ class SpeedLimitService : Service(), LocationListener {
         speedKmh = if (hasSpeed()) speed * 3.6 else null,
         azimuthDegrees = if (hasBearing()) bearing.toDouble() else null
     )
+
+    private fun currentSpeed(location: Location): Float? =
+        location.speed.takeIf { location.hasSpeed() && it.isFinite() }
 
     private fun isFresh(location: Location): Boolean =
         SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos <= GPS_MAX_AGE_NANOS
@@ -412,16 +418,15 @@ class SpeedLimitService : Service(), LocationListener {
             locationManager.removeUpdates(this)
         } catch (_: SecurityException) {
         }
-        gpsSamples.clear()
+        clearMatchedRoadData()
         requestInFlight = false
-        clearDisplayedLimit()
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, false).apply()
         networkExecutor.shutdownNow()
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     override fun onProviderDisabled(provider: String) {
-        clearDisplayedLimit()
+        clearMatchedRoadData()
         publish("GPS отключён", null, null, null)
     }
 
@@ -440,6 +445,7 @@ class SpeedLimitService : Service(), LocationListener {
             locationManager.removeUpdates(this)
         } catch (_: Exception) {
         }
+        clearMatchedRoadData()
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putBoolean(KEY_RUNNING, false).apply()
         networkExecutor.shutdownNow()
         super.onDestroy()
@@ -460,17 +466,17 @@ class SpeedLimitService : Service(), LocationListener {
         private const val NOTIFICATION_ID = 71
         private const val GPS_INTERVAL_MILLIS = 1_000L
         private const val GPS_MAX_AGE_NANOS = 15_000_000_000L
+        private const val STALE_FIX_CHECK_INTERVAL_MILLIS = 5_000L
         private const val MAX_API_ACCURACY_METRES = 80f
         private const val MIN_SAMPLE_GAP_MILLIS = 1_000L
         private const val MAX_SAMPLE_GAP_MILLIS = 10_000L
+        private const val MAX_SAMPLE_AGE_FOR_REQUEST_MILLIS = 2_000L
         private const val MAX_QUERY_SPAN_MILLIS = 10_000L
-        private const val INITIAL_QUERY_POINTS = 2
-        private const val REFRESH_QUERY_POINTS = 10
+        private const val MIN_QUERY_POINTS = 2
         private const val MAX_QUERY_POINTS = 10
-        private const val SUCCESSFUL_REQUEST_COOLDOWN_MILLIS = 1_000L
+        private const val SUCCESSFUL_REQUEST_COOLDOWN_MILLIS = 2_000L
         private const val INITIAL_RETRY_DELAY_MILLIS = 5_000L
         private const val MAX_RETRY_DELAY_MILLIS = 60_000L
-        private const val MAX_DISPLAY_AGE_MILLIS = 12_000L
-        private const val MAX_DISPLAY_DISTANCE_METRES = 100f
+        private const val MAX_BACKOFF_EXPONENT = 4
     }
 }
